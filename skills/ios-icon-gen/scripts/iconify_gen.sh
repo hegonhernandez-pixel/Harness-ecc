@@ -158,6 +158,8 @@ generate_icon() {
     local imageset_dir="${OUTPUT}/${asset_name}.imageset"
 
     mkdir -p "$imageset_dir"
+    local conversion_dir
+    conversion_dir=$(mktemp -d "${imageset_dir}/.iconify.XXXXXX")
 
     echo "Generating ${asset_name} from Iconify '${icon_id}':"
 
@@ -171,14 +173,21 @@ generate_icon() {
 
         local svg_url="${API_BASE}/${collection}/${name}.svg?width=${px}&height=${px}&color=%23${COLOR}"
         local svg_file="${imageset_dir}/${asset_name}${suffix}.svg"
-        local png_file="${imageset_dir}/${asset_name}${suffix}.png"
+        local png_file="${conversion_dir}/${asset_name}${suffix}.png"
 
         curl "${CURL_OPTS[@]}" "$svg_url" -o "$svg_file" || { echo "ERROR: Failed to download icon '${icon_id}'"; exit 1; }
-        sips -s format png "$svg_file" --out "$png_file" >/dev/null 2>&1 || echo "WARNING: sips conversion may have failed for ${svg_file}"
+        if ! sips -s format png "$svg_file" --out "$png_file" >/dev/null 2>&1 || [[ ! -s "$png_file" ]]; then
+            echo "ERROR: PNG conversion failed for ${svg_file}; keeping the SVG" >&2
+            return 1
+        fi
         rm "$svg_file"
 
         echo "  ${asset_name}${suffix}.png (${px}x${px})"
     done
+
+    # Publish only after every scale has produced a fresh, nonempty PNG.
+    mv "${conversion_dir}/"*.png "$imageset_dir/"
+    rmdir "$conversion_dir"
 
     # Write Contents.json
     cat > "${imageset_dir}/Contents.json" <<JSONEOF
