@@ -507,6 +507,7 @@ function setLang(l) {
   document.getElementById('lang-label').textContent = (L[l]||L.en).name.split(' ')[0].slice(0,2).toUpperCase();
   document.getElementById('lang-drop').classList.remove('show');
   applyLang();
+  if (location.hash.startsWith('#/tabs/')) renderMain();
   if (!location.hash || location.hash==='#/') renderMain();
   else handleRoute();
 }
@@ -555,6 +556,10 @@ function handleRoute() {
   if (!hash || hash === '/') { renderMain(); return; }
   const parts = hash.split('/').filter(Boolean);
   if (parts.length < 2) { renderMain(); return; }
+  if (parts[0] === 'tabs' && parts.length === 2 && ['agents','skills','commands','rules','mcps','hooks'].includes(parts[1])) {
+    showTab(parts[1], document.querySelector('.nav-it[data-tab="'+parts[1]+'"]'));
+    return;
+  }
   renderPage(parts[0], decodeURIComponent(parts.slice(1).join('/')));
 }
 window.addEventListener('hashchange', handleRoute);
@@ -595,12 +600,13 @@ function renderMain() {
 }
 
 function showTab(name, btn) {
+  if (!document.getElementById('panel-'+name)) renderMain();
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-it').forEach(n => n.classList.remove('active'));
   const p = document.getElementById('panel-'+name);
   if (p) p.classList.add('active');
   if (btn) btn.classList.add('active');
-  location.hash = '';
+  location.hash = '#/tabs/'+name;
 }
 
 // Render functions
@@ -707,6 +713,7 @@ function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 
 // Detail Pages
 function renderPage(type, name) {
+  if (type === 'commands' && name.startsWith('/')) name = name.slice(1);
   addRecent(type, name);
   const app = document.getElementById('app');
   let html = '';
