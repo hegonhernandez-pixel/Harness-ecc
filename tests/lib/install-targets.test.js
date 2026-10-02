@@ -670,6 +670,48 @@ function runTests() {
     );
   })) passed++; else failed++;
 
+  if (test('codex adapter uses the invocation CODEX_HOME for root and ledger', () => {
+    const adapter = getInstallTargetAdapter('codex');
+    const homeDir = path.resolve('/Users/isolated');
+    const customRoot = path.join(homeDir, 'custom-codex');
+    const input = { homeDir, env: { CODEX_HOME: customRoot } };
+    assert.strictEqual(adapter.resolveRoot(input), customRoot);
+    assert.strictEqual(adapter.getInstallStatePath(input), path.join(customRoot, 'ecc-install-state.json'));
+    assert.strictEqual(adapter.resolveRoot({ homeDir, env: {} }), path.join(homeDir, '.codex'));
+    assert.strictEqual(adapter.resolveRoot({ homeDir, env: { CODEX_HOME: '' } }), path.join(homeDir, '.codex'));
+    const spacedRoot = path.join(homeDir, ' custom-codex');
+    assert.strictEqual(adapter.resolveRoot({ homeDir, env: { CODEX_HOME: spacedRoot } }), spacedRoot);
+    assert.strictEqual(adapter.resolveRoot({ homeDir }), path.join(homeDir, '.codex'));
+  })) passed++; else failed++;
+
+  if (test('actual Codex install dry run plans files under CODEX_HOME without writing', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-codex-home-'));
+    try {
+      const customRoot = path.join(homeDir, 'active-codex');
+      const child = spawnSync(process.execPath, [
+        path.join(__dirname, '../../scripts/install-apply.js'),
+        '--target', 'codex', '--profile', 'core', '--dry-run', '--json',
+      ], {
+        cwd: homeDir,
+        encoding: 'utf8',
+        env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, CODEX_HOME: customRoot },
+      });
+      assert.strictEqual(child.status, 0, child.stderr);
+      const result = JSON.parse(child.stdout);
+      assert.strictEqual(result.dryRun, true);
+      assert.strictEqual(result.plan.targetRoot, customRoot);
+      assert.strictEqual(result.plan.installStatePath, path.join(customRoot, 'ecc-install-state.json'));
+      assert.ok(result.plan.operations.length > 0);
+      assert.ok(result.plan.operations.every(operation => {
+        const relative = path.relative(customRoot, operation.destinationPath);
+        return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+      }));
+      assert.deepStrictEqual(fs.readdirSync(homeDir), []);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  })) passed++; else failed++;
+
   if (test('opencode adapter isolates an explicit home from ambient config overrides', () => {
     const homeDir = '/Users/isolated';
     const registryPath = path.join(__dirname, '..', '..', 'scripts', 'lib', 'install-targets', 'registry.js');
