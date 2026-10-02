@@ -133,6 +133,12 @@ services:
   app:
     build:
       target: production
+    command: !reset null
+    volumes: !reset []
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${PRODUCTION_DATABASE_URL:?Set PRODUCTION_DATABASE_URL}
+      REDIS_URL: ${PRODUCTION_REDIS_URL:?Set PRODUCTION_REDIS_URL}
     restart: always
     deploy:
       resources:
@@ -140,6 +146,8 @@ services:
           cpus: "1.0"
           memory: 512M
 ```
+
+使用支持 `!reset` 的当前 Docker Compose 版本。只修改构建目标仍会保留基础服务的命令、环境和挂载。重置命令以使用生产镜像 CMD，移除开发挂载，并显式设置运行环境。单独写 `volumes: []` 不会移除继承的挂载。
 
 ```bash
 # Development (auto-loads override)

@@ -124,6 +124,12 @@ services:
   app:
     build:
       target: production
+    command: !reset null
+    volumes: !reset []
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${PRODUCTION_DATABASE_URL:?Set PRODUCTION_DATABASE_URL}
+      REDIS_URL: ${PRODUCTION_REDIS_URL:?Set PRODUCTION_REDIS_URL}
     restart: always
     deploy:
       resources:
@@ -131,6 +137,8 @@ services:
           cpus: "1.0"
           memory: 512M
 ```
+
+Use a current Docker Compose release that supports `!reset`. Changing the build target alone keeps the base service command, environment, and volumes. Reset the command to use the production image CMD, remove development mounts, and set the runtime environment explicitly. An empty `volumes: []` alone does not remove inherited mounts.
 
 ```bash
 # Development (auto-loads override)

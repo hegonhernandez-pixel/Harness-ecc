@@ -133,6 +133,12 @@ services:
   app:
     build:
       target: production
+    command: !reset null
+    volumes: !reset []
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${PRODUCTION_DATABASE_URL:?Set PRODUCTION_DATABASE_URL}
+      REDIS_URL: ${PRODUCTION_REDIS_URL:?Set PRODUCTION_REDIS_URL}
     restart: always
     deploy:
       resources:
@@ -140,6 +146,8 @@ services:
           cpus: "1.0"
           memory: 512M
 ```
+
+`!reset` destekleyen güncel bir Docker Compose sürümü kullanın. Yalnızca derleme hedefini değiştirmek temel servisin komutunu, ortamını ve volume bağlarını korur. Üretim imajının CMD komutunu kullanmak için komutu sıfırlayın, geliştirme bağlarını kaldırın ve çalışma ortamını açıkça ayarlayın. Tek başına `volumes: []` devralınan bağları kaldırmaz.
 
 ```bash
 # Geliştirme (override'ı otomatik yükler)
