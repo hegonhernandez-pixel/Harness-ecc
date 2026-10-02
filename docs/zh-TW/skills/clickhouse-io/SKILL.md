@@ -374,7 +374,7 @@ async function etlPipeline() {
 setInterval(etlPipeline, 60 * 60 * 1000)  // 每小時
 ```
 
-### 變更資料捕獲（CDC）
+### 變更通知（LISTEN/NOTIFY）
 
 ```typescript
 // 監聽 PostgreSQL 變更並同步到 ClickHouse
@@ -382,25 +382,54 @@ import { Client } from 'pg'
 
 const pgClient = new Client({ connectionString: process.env.DATABASE_URL })
 
-pgClient.query('LISTEN market_updates')
+pgClient.on('error', (error) => {
+  console.error('PostgreSQL listener connection failed:', error)
+  // Let a process supervisor restart the failed listener.
+  process.exit(1)
+})
 
 pgClient.on('notification', async (msg) => {
-  const update = JSON.parse(msg.payload)
+  if (!msg.payload) return
 
-  await clickhouse.insert({
-    table: 'market_updates',
-    values: [
-      {
-        market_id: update.id,
-        event_type: update.operation,  // INSERT, UPDATE, DELETE
-        timestamp: new Date(),
-        data: JSON.stringify(update.new_data)
-      }
-    ],
-    format: 'JSONEachRow'
-  })
+  try {
+    const update = JSON.parse(msg.payload)
+
+    await clickhouse.insert({
+      table: 'market_updates',
+      values: [
+        {
+          market_id: update.id,
+          event_type: update.operation,  // INSERT, UPDATE, DELETE
+          timestamp: new Date(),
+          data: JSON.stringify(update.new_data)
+        }
+      ],
+      format: 'JSONEachRow'
+    })
+  } catch (error) {
+    console.error('Failed to forward market update:', error)
+  }
+})
+
+async function startNotificationListener() {
+  await pgClient.connect()
+  await pgClient.query('LISTEN market_updates')
+}
+
+void startNotificationListener().catch(async (error) => {
+  console.error('Failed to start notification listener:', error)
+  try {
+    await pgClient.end()
+  } catch (closeError) {
+    console.error('Failed to close PostgreSQL listener:', closeError)
+  }
+  process.exitCode = 1
 })
 ```
+
+錯誤會被記錄，但此範例不會重試或重播失敗的通知；需要保證投遞時，應使用持久 outbox。
+
+此範例在工作階段監聽期間轉送應用程式發出的 JSON 通知。`LISTEN` 註冊隨工作階段結束而清除，因此不提供持久 CDC 或重播。需要保留監聽器停機期間的變更時，應使用邏輯解碼或持久 outbox。
 
 ## 最佳實務
 

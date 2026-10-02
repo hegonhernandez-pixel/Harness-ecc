@@ -374,7 +374,7 @@ async function etlPipeline() {
 setInterval(etlPipeline, 60 * 60 * 1000)  // 1時間ごと
 ```
 
-### 変更データキャプチャ（CDC）
+### 変更通知（LISTEN/NOTIFY）
 
 ```typescript
 // PostgreSQLの変更をリッスンしてClickHouseに同期
@@ -382,25 +382,54 @@ import { Client } from 'pg'
 
 const pgClient = new Client({ connectionString: process.env.DATABASE_URL })
 
-pgClient.query('LISTEN market_updates')
+pgClient.on('error', (error) => {
+  console.error('PostgreSQL listener connection failed:', error)
+  // Let a process supervisor restart the failed listener.
+  process.exit(1)
+})
 
 pgClient.on('notification', async (msg) => {
-  const update = JSON.parse(msg.payload)
+  if (!msg.payload) return
 
-  await clickhouse.insert({
-    table: 'market_updates',
-    values: [
-      {
-        market_id: update.id,
-        event_type: update.operation,  // INSERT, UPDATE, DELETE
-        timestamp: new Date(),
-        data: JSON.stringify(update.new_data)
-      }
-    ],
-    format: 'JSONEachRow'
-  })
+  try {
+    const update = JSON.parse(msg.payload)
+
+    await clickhouse.insert({
+      table: 'market_updates',
+      values: [
+        {
+          market_id: update.id,
+          event_type: update.operation,  // INSERT, UPDATE, DELETE
+          timestamp: new Date(),
+          data: JSON.stringify(update.new_data)
+        }
+      ],
+      format: 'JSONEachRow'
+    })
+  } catch (error) {
+    console.error('Failed to forward market update:', error)
+  }
+})
+
+async function startNotificationListener() {
+  await pgClient.connect()
+  await pgClient.query('LISTEN market_updates')
+}
+
+void startNotificationListener().catch(async (error) => {
+  console.error('Failed to start notification listener:', error)
+  try {
+    await pgClient.end()
+  } catch (closeError) {
+    console.error('Failed to close PostgreSQL listener:', closeError)
+  }
+  process.exitCode = 1
 })
 ```
+
+失敗は記録されますが、この例は失敗した通知を再試行・再生しません。配信を保証する必要がある場合は永続的な outbox を使用します。
+
+この例は、セッションがリッスンしている間にアプリケーションが送信する JSON 通知を転送します。`LISTEN` の登録はセッション終了時に解除されるため、永続的な CDC や再生機能ではありません。リスナー停止中の変更も保持する必要がある場合は、論理デコーディングまたは永続的な outbox を使用します。
 
 ## ベストプラクティス
 
