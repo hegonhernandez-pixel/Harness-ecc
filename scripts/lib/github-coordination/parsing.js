@@ -10,21 +10,50 @@ function normalizeBodyForComparison(body) {
   return (body || '').replace(/"lastSyncAt"\s*:\s*[^,}\n]+/g, '"lastSyncAt": NORMALIZED');
 }
 
-function extractCoordinationState(body, policy = DEFAULT_POLICY) {
+function coordinationSection(body, policy) {
+  const source = String(body || '');
   const marker = escapeRegExp(policy.sectionMarker || DEFAULT_SECTION_MARKER);
-  const regex = new RegExp(`<!--\\s*${marker}:start\\s*-->\\s*` + '```json\\s*([\\s\\S]*?)\\s*```' + `\\s*<!--\\s*${marker}:end\\s*-->`, 'm');
-  const match = String(body || '').match(regex);
-
-  if (!match) {
-    return null;
+  const boundary = new RegExp(`^[ \t]*<!--\\s*${marker}:(start|end)\\s*-->[ \t]*$`);
+  const boundaries = [];
+  let fence = null;
+  for (const match of source.matchAll(/[^\n]*\n|[^\n]+$/g)) {
+    const line = match[0].replace(/\r?\n$/, '');
+    const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (delimiter && delimiter[1][0] === fence[0]
+        && delimiter[1].length >= fence.length && !delimiter[2].trim()) fence = null;
+      continue;
+    }
+    if (delimiter) { fence = delimiter[1]; continue; }
+    const found = line.match(boundary);
+    if (found) boundaries.push({ kind: found[1], index: match.index, length: match[0].length });
   }
+  if (boundaries.length === 0) return null;
+  if (boundaries.length !== 2 || boundaries[0].kind !== 'start' || boundaries[1].kind !== 'end') {
+    throw new SyntaxError('Malformed coordination section boundaries or JSON fence');
+  }
+  const [start, end] = boundaries;
+  const content = source.slice(start.index + start.length, end.index);
+  const payload = content.match(/^\s*```json[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*\s*$/);
+  if (!payload) throw new SyntaxError('Malformed coordination section boundaries or JSON fence');
+  return { start: start.index, end: end.index + end.length, payload: payload[1] };
+}
 
+function extractCoordinationState(body, policy = DEFAULT_POLICY) {
+  const section = coordinationSection(body, policy);
+  if (!section) return null;
+
+  let parsed;
   try {
-    const parsed = JSON.parse(match[1]);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch (error) {
-    throw new SyntaxError(`Malformed coordination JSON in body: ${error.message} — raw: ${match[1].slice(0, 120)}`);
+    parsed = JSON.parse(section.payload);
+  } catch {
+    // Native JSON errors can quote source text; do not leak issue content.
+    throw new SyntaxError('Malformed coordination JSON in body');
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new SyntaxError('Coordination JSON must be an object');
+  }
+  return parsed;
 }
 
 function extractIssueReferences(text) {
@@ -101,12 +130,12 @@ function renderCoordinationState(state, policy = DEFAULT_POLICY) {
 
 function mergeIssueBody(issue, nextState, policy = DEFAULT_POLICY) {
   const body = String(issue.body || '');
-  const markerEscaped = escapeRegExp(policy.sectionMarker || DEFAULT_SECTION_MARKER);
+  // Present but damaged metadata must not be replaced by inferred defaults.
+  extractCoordinationState(body, policy);
+  const section = coordinationSection(body, policy);
   const rendered = renderCoordinationState(nextState, policy);
-  const regex = new RegExp(`\\n?<!--\\s*${markerEscaped}:start\\s*-->[\\s\\S]*?<!--\\s*${markerEscaped}:end\\s*-->\\n?`, 'm');
-
-  if (regex.test(body)) {
-    return body.replace(regex, `\n${rendered}\n`).trim() + '\n';
+  if (section) {
+    return `${body.slice(0, section.start)}${rendered}\n${body.slice(section.end)}`.trim() + '\n';
   }
 
   const trimmed = body.trimEnd();
