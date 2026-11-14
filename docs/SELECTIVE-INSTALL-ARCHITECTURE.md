@@ -478,7 +478,7 @@ target-specific semantics.
 
 ## Design Constraints
 
-1. Keep `everything-claude-code` as the canonical source repo.
+1. Keep `ECC` as the canonical source repo.
 2. Preserve existing `install.sh` flows during migration.
 3. Support home-scoped and project-scoped targets from the same planner.
 4. Make uninstall/repair/doctor possible without guessing.
@@ -593,7 +593,7 @@ Suggested first adapters:
 2. `cursor-project`
    writes into `./.cursor/...`
 3. `antigravity-project`
-   writes into `./.agent/...`
+   writes into `./.agents/...`
 4. `codex-home`
    later
 5. `opencode-home`
@@ -668,11 +668,15 @@ Suggested path conventions:
 - Cursor target:
   `./.cursor/ecc-install-state.json`
 - Antigravity target:
-  `./.agent/ecc-install-state.json`
+  `./.agents/ecc-install-state.json`
 - future Codex target:
   `~/.codex/ecc-install-state.json`
 
 Suggested payload:
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:1061e27577c2bc38b883d2aa4e55a61189dff49f13cf1fdf9f610368ab04e8d7 -->
 
 ```json
 {
@@ -703,7 +707,7 @@ Suggested payload:
     "skippedModules": []
   },
   "source": {
-    "repoVersion": "2.0.0",
+    "repoVersion": "2.2.4",
     "repoCommit": "git-sha",
     "manifestVersion": 1
   },
@@ -717,6 +721,8 @@ Suggested payload:
   ]
 }
 ```
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 State requirements:
 

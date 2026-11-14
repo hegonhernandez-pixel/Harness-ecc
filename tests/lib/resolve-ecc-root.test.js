@@ -17,7 +17,11 @@ const CURRENT_PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')
 ).version;
 
-const { resolveEccRoot, INLINE_RESOLVE } = require('../../scripts/lib/resolve-ecc-root');
+const {
+  resolveEccRoot,
+  normalizePluginRootForPlatform,
+  INLINE_RESOLVE
+} = require('../../scripts/lib/resolve-ecc-root');
 
 // Sentinel ECC skill that resolveEccRoot() requires (alongside the script tree)
 // before accepting a root for skill consumers. Kept in sync with the module's
@@ -363,11 +367,53 @@ function runTests() {
     }
   })) passed++; else failed++;
 
+  if (test('custom probe skips a qualifying root that lacks the probed script (auto-update)', () => {
+    // The surviving failure shape after #2544/#2577: a partial install can
+    // carry full resolver evidence (script tree + sentinel ECC skill) yet
+    // still lack the top-level script that auto-update will execute. The
+    // default probe rightly accepts such a root; a caller probing for the
+    // script it runs must skip it and reach the complete plugin root.
+    const homeDir = createTempDir();
+    try {
+      const claudeDir = setupStandardInstall(homeDir);
+      const marketplaceRoot = setupLegacyPluginInstall(homeDir, ['marketplaces', 'ecc']);
+      fs.writeFileSync(path.join(marketplaceRoot, 'scripts', 'auto-update.js'), '// stub');
+
+      assert.strictEqual(
+        resolveEccRoot({ envRoot: '', homeDir }),
+        claudeDir,
+        'default probe accepts a root with full resolver evidence'
+      );
+      assert.strictEqual(
+        resolveEccRoot({
+          envRoot: '',
+          homeDir,
+          probe: path.join('scripts', 'auto-update.js'),
+        }),
+        marketplaceRoot,
+        'auto-update probe must skip roots that lack the script it will execute'
+      );
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  })) passed++; else failed++;
+
   // ─── INLINE_RESOLVE ───
 
   if (test('INLINE_RESOLVE is a non-empty string', () => {
     assert.ok(typeof INLINE_RESOLVE === 'string');
     assert.ok(INLINE_RESOLVE.length > 50, 'Should be a substantial inline expression');
+  })) passed++; else failed++;
+
+  if (test('normalizes Git Bash drive roots for Windows lifecycle loaders', () => {
+    assert.strictEqual(
+      normalizePluginRootForPlatform('/c/Users/x/.claude/plugins/ecc', 'win32'),
+      'C:/Users/x/.claude/plugins/ecc'
+    );
+    assert.strictEqual(
+      normalizePluginRootForPlatform('/workspace/ecc', 'win32'),
+      '/workspace/ecc'
+    );
   })) passed++; else failed++;
 
   if (test('INLINE_RESOLVE does not contain spread, nested arrays, or escaped quotes', () => {

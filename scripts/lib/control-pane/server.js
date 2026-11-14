@@ -9,6 +9,8 @@ const { buildControlPaneAction } = require('./actions');
 const { buildControlPaneSnapshot, resolveControlPaneConfig } = require('./state');
 const { renderControlPaneHtml } = require('./ui');
 const { renderProximityVizHtml } = require('./proximity-viz');
+const { renderControlPlaneViewHtml } = require('./control-plane-view-ui');
+const { createControlPlaneViewSource } = require('./control-plane-view');
 const { claimWorkItem, moveWorkItem } = require('./work-item-mutations');
 
 // Run a single write against the local work-item store, then close it. Kept
@@ -28,6 +30,7 @@ async function withStateStore(stateDbPath, fn) {
 // loopback server shares one hardened implementation; re-exported below to
 // keep this module's public API stable.
 const {
+  LOOPBACK_HOSTNAMES,
   buildAllowedHostnames,
   isAllowedHostHeader,
   isAllowedOrigin
@@ -64,6 +67,7 @@ function parseArgs(argv) {
   const args = argv.slice(2);
   const help = args.includes('--help') || args.includes('-h');
   const host = valueAfter(args, '--host') || '127.0.0.1';
+  assertLoopbackHost(host);
   const portValue = valueAfter(args, '--port') || '8765';
   const port = Number.parseInt(portValue, 10);
   if (!Number.isFinite(port) || port < 0 || port > 65535) {
@@ -100,79 +104,136 @@ function sendText(res, statusCode, body, contentType = 'text/plain; charset=utf-
   res.end(body);
 }
 
-async function readRequestJson(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  if (chunks.length === 0) return {};
-  const raw = Buffer.concat(chunks).toString('utf8').trim();
-  if (!raw) return {};
-  return JSON.parse(raw);
+function assertLoopbackHost(host) {
+  if (!LOOPBACK_HOSTNAMES.has(String(host).toLowerCase())) {
+    throw new Error('Control pane requires a loopback host (127.0.0.1, localhost, or ::1)');
+  }
 }
 
-function boundedOutput(value, limit = 20000) {
-  const text = String(value || '');
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n[truncated ${text.length - limit} chars]`;
+function readRequestJson(req) {
+  const maxBytes = 64 * 1024;
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    const cleanup = () => {
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+      req.off('aborted', onAborted);
+    };
+    const onError = error => { cleanup(); reject(error); };
+    const onAborted = () => onError(new Error('Request aborted'));
+    const onData = chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        cleanup();
+        req.resume(); // Discard subsequent bytes without retaining them.
+        const error = new Error('Request body exceeds 65536 bytes');
+        error.statusCode = 413;
+        reject(error);
+      } else chunks.push(chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8').trim();
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (error) { reject(error); }
+    };
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+    req.on('aborted', onAborted);
+  });
+}
+
+function outputCollector(limit = 20000) {
+  let text = '';
+  let discarded = 0;
+  return {
+    append(chunk) {
+      const value = chunk.toString('utf8');
+      const remaining = limit - text.length;
+      text += value.slice(0, remaining);
+      discarded += Math.max(0, value.length - remaining);
+    },
+    value() { return discarded ? `${text}\n[truncated ${discarded} chars]` : text; }
+  };
 }
 
 function runAction(action, options = {}) {
   const timeoutMs = options.timeoutMs || 120000;
+  const killGraceMs = options.killGraceMs || 1000;
   return new Promise(resolve => {
     const startedAt = new Date().toISOString();
+    const processGroup = process.platform !== 'win32';
     const child = spawn(action.command, action.args, {
-      cwd: action.cwd,
-      env: process.env,
+      cwd: action.cwd, env: process.env,
+      detached: processGroup,
       stdio: ['ignore', 'pipe', 'pipe']
     });
-    let stdout = '';
-    let stderr = '';
+    const stdout = outputCollector();
+    const stderr = outputCollector();
     let settled = false;
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        child.kill('SIGTERM');
+    let timedOut = false;
+    let escalation;
+    let finalDeadline;
+    let escalated = false;
+    let pendingFinish;
+    const terminate = signal => {
+      try {
+        if (processGroup && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch (error) {
+        if (error.code !== 'ESRCH') stderr.append(Buffer.from(error.message));
       }
+    };
+    const finish = (code, signal, error) => {
+      if (settled) return;
+      // The leader may exit while descendants with closed pipes ignore TERM.
+      // Keep the group escalation alive before reporting timed-out completion.
+      if (timedOut && processGroup && !escalated) {
+        pendingFinish = [code, signal, error];
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(escalation);
+      clearTimeout(finalDeadline);
+      resolve({
+        ok: !timedOut && !error && code === 0,
+        action: action.id, startedAt, finishedAt: new Date().toISOString(),
+        code, signal, timedOut,
+        ...(error ? { error: error.message } : {}),
+        stdout: stdout.value(), stderr: stderr.value()
+      });
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminate('SIGTERM');
+      escalation = setTimeout(() => {
+        terminate('SIGKILL');
+        escalated = true;
+        if (pendingFinish) { finish(...pendingFinish); return; }
+        finalDeadline = setTimeout(() => {
+          child.stdout.destroy();
+          child.stderr.destroy();
+          child.unref();
+          finish(null, 'SIGKILL', new Error('Action termination deadline exceeded'));
+        }, killGraceMs);
+      }, killGraceMs);
     }, timeoutMs);
-
-    child.stdout.on('data', chunk => {
-      stdout += chunk.toString('utf8');
-    });
-    child.stderr.on('data', chunk => {
-      stderr += chunk.toString('utf8');
-    });
-    child.on('error', error => {
-      settled = true;
-      clearTimeout(timeout);
-      resolve({
-        ok: false,
-        action: action.id,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        code: null,
-        error: error.message,
-        stdout: boundedOutput(stdout),
-        stderr: boundedOutput(stderr)
-      });
-    });
-    child.on('close', (code, signal) => {
-      settled = true;
-      clearTimeout(timeout);
-      resolve({
-        ok: code === 0,
-        action: action.id,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        code,
-        signal,
-        stdout: boundedOutput(stdout),
-        stderr: boundedOutput(stderr)
-      });
-    });
+    child.stdout.on('data', chunk => stdout.append(chunk));
+    child.stderr.on('data', chunk => stderr.append(chunk));
+    child.on('error', error => finish(null, null, error));
+    child.on('close', (code, signal) => finish(code, signal));
   });
 }
 
 function createControlPaneServer(options = {}) {
   const repoRoot = path.resolve(options.repoRoot || path.join(__dirname, '..', '..', '..'));
   const host = options.host || '127.0.0.1';
+  assertLoopbackHost(host);
   const port = options.port === null || options.port === undefined ? 8765 : options.port;
   const allowActions = options.allowActions !== false;
   const resolvedConfig = resolveControlPaneConfig({
@@ -185,18 +246,36 @@ function createControlPaneServer(options = {}) {
   const baseQuery = options.query || '';
   const allowedHostnames = buildAllowedHostnames(host);
 
+  // Live control-plane view: sessions + proximity scan + coordination
+  // inventory, joined as tasks/lanes/events with a 2D projection. The view
+  // source owns the rolling projection window so z-scores span ticks.
+  const viewSource = createControlPlaneViewSource({
+    projection: options.projection || {},
+    viewOptions: options.viewOptions || {},
+    buildSnapshot: () =>
+      buildControlPaneSnapshot({
+        repoRoot,
+        dbPath: resolvedConfig.dbPath,
+        stateDbPath: resolvedConfig.stateDbPath,
+        config: resolvedConfig,
+        allowActions,
+        includeProximity: true,
+        proximityOptions: options.proximityOptions
+      })
+  });
+
   const server = http.createServer(async (req, res) => {
     try {
       if (!isAllowedHostHeader(req.headers.host, allowedHostnames)) {
         sendJson(res, 421, { ok: false, error: 'Misdirected request' });
         return;
       }
-      if (!isAllowedOrigin(req.headers.origin, allowedHostnames)) {
+      if (!isAllowedOrigin(req.headers.origin, allowedHostnames, `http://${req.headers.host}`)) {
         sendJson(res, 403, { ok: false, error: 'Forbidden origin' });
         return;
       }
 
-      const requestUrl = new URL(req.url, `http://${host}:${port || 0}`);
+      const requestUrl = new URL(req.url, `http://${req.headers.host}`);
 
       if (req.method === 'GET' && requestUrl.pathname === '/') {
         sendText(res, 200, renderControlPaneHtml(), 'text/html; charset=utf-8');
@@ -254,6 +333,29 @@ function createControlPaneServer(options = {}) {
           includeProximity: true
         });
         sendJson(res, 200, snapshot.proximity || { enabled: true, advisories: [], positions: [], links: [], counts: {} });
+        return;
+      }
+
+      // Control-plane live view: 2D projection + advisory events + inventory.
+      if (req.method === 'GET' && requestUrl.pathname === '/control-plane') {
+        sendText(res, 200, renderControlPlaneViewHtml(), 'text/html; charset=utf-8');
+        return;
+      }
+
+      if (req.method === 'GET' && requestUrl.pathname === '/api/control-plane') {
+        sendJson(res, 200, await viewSource.build());
+        return;
+      }
+
+      if (req.method === 'GET' && requestUrl.pathname === '/api/control-plane/events') {
+        const view = await viewSource.build();
+        sendJson(res, 200, {
+          schemaVersion: view.schemaVersion,
+          generatedAt: view.generatedAt,
+          thresholds: view.thresholds,
+          events: view.events,
+          counts: { events: view.counts.events, advisories: view.counts.advisories, resolutions: view.counts.resolutions }
+        });
         return;
       }
 
@@ -325,7 +427,8 @@ function createControlPaneServer(options = {}) {
 
       sendJson(res, 404, { ok: false, error: 'not found' });
     } catch (error) {
-      sendJson(res, 500, {
+      if (error.statusCode === 413) res.setHeader('connection', 'close');
+      sendJson(res, error.statusCode || 500, {
         ok: false,
         error: error.message
       });
@@ -336,14 +439,15 @@ function createControlPaneServer(options = {}) {
     get url() {
       const address = server.address();
       const actualPort = address && typeof address === 'object' ? address.port : port;
-      return `http://${host}:${actualPort}`;
+      const urlHost = host === '::1' ? '[::1]' : host;
+      return `http://${urlHost}:${actualPort}`;
     },
     server,
     config: resolvedConfig,
     listen() {
       return new Promise((resolve, reject) => {
         server.once('error', reject);
-        server.listen(port, host, () => {
+        server.listen(port, host === '[::1]' ? '::1' : host, () => {
           server.off('error', reject);
           resolve(this);
         });

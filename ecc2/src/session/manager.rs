@@ -2039,7 +2039,10 @@ pub async fn prune_inactive_worktrees(
     let mut cleaned_session_ids = Vec::new();
     let mut active_with_worktree_ids = Vec::new();
     let mut retained_session_ids = Vec::new();
-    let retention = chrono::Duration::seconds(cfg.worktree_retention_secs as i64);
+    let retention = chrono::Duration::try_seconds(
+        i64::try_from(cfg.worktree_retention_secs).unwrap_or(i64::MAX),
+    )
+    .unwrap_or(chrono::Duration::MAX);
     let now = chrono::Utc::now();
 
     for session in sessions {
@@ -2062,8 +2065,19 @@ pub async fn prune_inactive_worktrees(
             continue;
         }
 
-        cleanup_session_worktree(db, &session.id).await?;
-        cleaned_session_ids.push(session.id);
+        let worktree = session.worktree.as_ref().expect("worktree checked above");
+        match crate::worktree::prune_if_safe(worktree) {
+            Ok(true) => {
+                db.clear_worktree_to_dir(&session.id, &session.working_dir)?;
+                cleaned_session_ids.push(session.id);
+            }
+            result => {
+                if let Err(error) = result {
+                    tracing::warn!("Retaining worktree for {}: {error}", session.id);
+                }
+                retained_session_ids.push(session.id);
+            }
+        }
     }
 
     Ok(WorktreePruneOutcome {
@@ -3064,7 +3078,9 @@ fn configure_background_runner_command(command: &mut Command) {
     {
         use std::os::windows::process::CommandExt;
 
-        command.as_std_mut().creation_flags(detached_creation_flags());
+        command
+            .as_std_mut()
+            .creation_flags(detached_creation_flags());
     }
 }
 
@@ -3554,6 +3570,8 @@ async fn spawn_claude_code(
         working_dir,
         None,
     );
+    #[cfg(unix)]
+    command.process_group(0);
     let child = command
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -3580,12 +3598,42 @@ async fn stop_session_with_options(
 }
 
 fn stop_session_recorded(db: &StateStore, session: &Session, cleanup_worktree: bool) -> Result<()> {
-    if let Some(pid) = session.pid {
-        kill_process(pid)?;
-    }
+    stop_session_recorded_with_killer(db, session, cleanup_worktree, kill_process)
+}
 
-    db.update_pid(&session.id, None)?;
-    db.update_state(&session.id, &SessionState::Stopped)?;
+fn stop_session_recorded_with_killer<F>(
+    db: &StateStore,
+    session: &Session,
+    cleanup_worktree: bool,
+    kill: F,
+) -> Result<()>
+where
+    F: Fn(u32) -> Result<()>,
+{
+    // Persist the request before signalling without overwriting a newer run.
+    anyhow::ensure!(
+        db.replace_process_state_if_current(
+            &session.id,
+            session.pid,
+            &session.state,
+            &SessionState::Stopped,
+        )?,
+        "Session changed while requesting stop: {}",
+        session.id
+    );
+    if let Some(pid) = session.pid {
+        if let Err(error) = kill(pid) {
+            // A failed signal must not hide a live process from daemon monitoring.
+            db.replace_process_state_if_current(
+                &session.id,
+                session.pid,
+                &SessionState::Stopped,
+                &session.state,
+            )?;
+            return Err(error);
+        }
+    }
+    db.finish_process(&session.id, session.pid, &SessionState::Stopped)?;
 
     if cleanup_worktree {
         if let Some(worktree) = session.worktree.as_ref() {
@@ -3599,9 +3647,18 @@ fn stop_session_recorded(db: &StateStore, session: &Session, cleanup_worktree: b
 
 #[cfg(unix)]
 fn kill_process(pid: u32) -> Result<()> {
-    send_signal(pid, libc::SIGTERM)?;
+    let pid = i32::try_from(pid).context("Process id exceeds the platform range")?;
+    anyhow::ensure!(pid > 1, "Refusing to signal a reserved process id");
+    // New sessions have their own process group. Legacy sessions are signalled
+    // individually so an inherited group can never kill ECC or its caller.
+    let target = if unsafe { libc::getpgid(pid) } == pid {
+        -pid
+    } else {
+        pid
+    };
+    send_signal(target, libc::SIGTERM)?;
     std::thread::sleep(std::time::Duration::from_millis(1200));
-    send_signal(pid, libc::SIGKILL)?;
+    send_signal(target, libc::SIGKILL)?;
     Ok(())
 }
 
@@ -3620,8 +3677,8 @@ fn kill_process(pid: u32) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn send_signal(pid: u32, signal: i32) -> Result<()> {
-    let outcome = unsafe { libc::kill(pid as i32, signal) };
+fn send_signal(pid: i32, signal: i32) -> Result<()> {
+    let outcome = unsafe { libc::kill(pid, signal) };
     if outcome == 0 {
         return Ok(());
     }
@@ -4217,11 +4274,39 @@ mod tests {
     use anyhow::{Context, Result};
     use chrono::{Duration, Utc};
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::Command as StdCommand;
     use std::thread;
     use std::time::Duration as StdDuration;
+
+    #[test]
+    fn failed_stop_restores_the_live_session_state() -> Result<()> {
+        let tempdir = TestDir::new("failed-stop")?;
+        let db = StateStore::open(&tempdir.path().join("state.db"))?;
+        let mut session = build_session("worker", SessionState::Running, Utc::now());
+        session.pid = Some(123);
+        db.insert_session(&session)?;
+        assert!(
+            stop_session_recorded_with_killer(&db, &session, false, |_| anyhow::bail!(
+                "permission denied"
+            ))
+            .is_err()
+        );
+        let current = db.get_session("worker")?.unwrap();
+        assert_eq!(current.state, SessionState::Running);
+        assert_eq!(current.pid, Some(123));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_rejects_reserved_and_out_of_range_pids() {
+        assert!(kill_process(0).is_err());
+        assert!(kill_process(1).is_err());
+        assert!(kill_process(u32::MAX).is_err());
+    }
 
     struct TestDir {
         path: PathBuf,
@@ -4268,6 +4353,7 @@ mod tests {
             auto_dispatch_limit_per_session: 5,
             auto_create_worktrees: true,
             auto_merge_ready_worktrees: false,
+            auto_prune_inactive_worktrees: false,
             desktop_notifications: crate::notifications::DesktopNotificationConfig::default(),
             webhook_notifications: crate::notifications::WebhookNotificationConfig::default(),
             completion_summary_notifications:
@@ -5057,9 +5143,12 @@ mod tests {
         );
 
         fs::write(&script_path, script)?;
-        let mut permissions = fs::metadata(&script_path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions)?;
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&script_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script_path, permissions)?;
+        }
 
         Ok((script_path, log_path))
     }
@@ -5122,9 +5211,12 @@ mod tests {
             log_path.display()
         );
         fs::write(&script_path, script)?;
-        let mut permissions = fs::metadata(&script_path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions)?;
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&script_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script_path, permissions)?;
+        }
 
         let mut command = Command::new(&script_path);
         command
@@ -5154,8 +5246,7 @@ mod tests {
 
     #[test]
     fn background_runner_stderr_log_path_is_session_scoped() {
-        let path =
-            background_runner_stderr_log_path(Path::new("/tmp/ecc-repo"), "session-123");
+        let path = background_runner_stderr_log_path(Path::new("/tmp/ecc-repo"), "session-123");
         assert_eq!(
             path,
             PathBuf::from("/tmp/ecc-repo/.claude/ecc2/logs/session-123.runner-stderr.log")

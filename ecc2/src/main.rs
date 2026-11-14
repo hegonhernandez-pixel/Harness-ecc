@@ -1,5 +1,6 @@
 mod comms;
 mod config;
+mod harness_eval;
 mod notifications;
 mod observability;
 mod session;
@@ -108,6 +109,11 @@ impl OptionalWorktreePolicyArgs {
 
 #[derive(clap::Subcommand, Debug)]
 enum Commands {
+    /// Run bounded, deterministic harness configuration evaluations
+    HarnessEval {
+        #[command(subcommand)]
+        command: HarnessEvalCommands,
+    },
     /// Launch the TUI dashboard
     Dashboard,
     /// Start a new agent session
@@ -435,6 +441,46 @@ enum Commands {
         #[arg(long)]
         cwd: PathBuf,
     },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum HarnessEvalCommands {
+    /// Record an immutable content-addressed candidate from a local JSON file
+    Record {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long = "trace-ref", required = true)]
+        trace_refs: Vec<String>,
+        #[arg(long = "evidence-ref", required = true)]
+        evidence_refs: Vec<String>,
+    },
+    /// Set the first baseline; subsequent changes require evaluation
+    ActivateInitial {
+        candidate_id: String,
+        #[arg(long)]
+        evidence_ref: String,
+    },
+    /// Evaluate paired scores and conditionally promote with a health gate
+    Run {
+        #[arg(long)]
+        candidate: String,
+        #[arg(long)]
+        baseline: String,
+        #[arg(long = "seed", required = true)]
+        seeds: Vec<u64>,
+        #[arg(long)]
+        measurements: PathBuf,
+        #[arg(long)]
+        evidence_ref: String,
+        #[arg(long)]
+        min_samples: usize,
+        #[arg(long)]
+        min_mean_delta: f64,
+        #[arg(long)]
+        min_win_rate: f64,
+    },
+    /// Show append-only promotion audit entries
+    Audit,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1345,6 +1391,37 @@ struct DotenvMemoryEntry {
     details: BTreeMap<String, String>,
 }
 
+fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect {}", path.display()))?;
+    if !metadata.is_file() {
+        anyhow::bail!("{label} must be a regular file");
+    }
+
+    let read_limit = max_bytes
+        .checked_add(1)
+        .context("bounded input byte limit is too large")?;
+    let mut content = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut content)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    if content.len() as u64 > max_bytes {
+        anyhow::bail!("{label} exceeds the {max_bytes}-byte limit");
+    }
+    Ok(content)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -1357,6 +1434,75 @@ async fn main() -> Result<()> {
     let db = session::store::StateStore::open(&cfg.db_path)?;
 
     match cli.command {
+        Some(Commands::HarnessEval { command }) => match command {
+            HarnessEvalCommands::Record {
+                config,
+                trace_refs,
+                evidence_refs,
+            } => {
+                let value: serde_json::Value = serde_json::from_slice(&read_bounded_file(
+                    &config,
+                    1_048_576,
+                    "candidate configuration",
+                )?)
+                .with_context(|| format!("Invalid JSON in {}", config.display()))?;
+                let candidate = harness_eval::CandidateSpec::new(value, trace_refs, evidence_refs)?;
+                db.record_harness_candidate(&candidate)?;
+                println!("{}", candidate.id);
+            }
+            HarnessEvalCommands::ActivateInitial {
+                candidate_id,
+                evidence_ref,
+            } => {
+                db.activate_initial_harness(&candidate_id, &evidence_ref)?;
+                println!("Activated initial baseline: {candidate_id}");
+            }
+            HarnessEvalCommands::Run {
+                candidate,
+                baseline,
+                seeds,
+                measurements,
+                evidence_ref,
+                min_samples,
+                min_mean_delta,
+                min_win_rate,
+            } => {
+                use harness_eval::Evaluator;
+                let evidence: harness_eval::RecordedEvidence = serde_json::from_slice(
+                    &read_bounded_file(&measurements, 8_388_608, "recorded measurements")?,
+                )
+                .with_context(|| {
+                    format!("Invalid recorded evidence in {}", measurements.display())
+                })?;
+                let mut evaluator = harness_eval::RecordedEvaluator::from_evidence(evidence)?;
+                let evaluator_name = evaluator.name().to_string();
+                let health_evidence = evaluator.health_evidence_snapshot()?;
+                let samples =
+                    harness_eval::evaluate_paired(&mut evaluator, &candidate, &baseline, &seeds)?;
+                let policy = harness_eval::PromotionPolicy {
+                    min_samples,
+                    min_mean_delta,
+                    min_win_rate,
+                };
+                let outcome = db.evaluate_promote_and_health_check(
+                    &candidate,
+                    &baseline,
+                    &evaluator_name,
+                    &samples,
+                    policy,
+                    &evidence_ref,
+                    &health_evidence,
+                    |id| evaluator.health_check(id),
+                )?;
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            }
+            HarnessEvalCommands::Audit => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&db.harness_audit_entries()?)?
+                );
+            }
+        },
         Some(Commands::Dashboard) | None => {
             tui::app::run(db, cfg).await?;
         }
@@ -4740,7 +4886,7 @@ fn format_prune_worktrees_human(outcome: &session::manager::WorktreePruneOutcome
         lines.push("No inactive worktrees are being retained".to_string());
     } else {
         lines.push(format!(
-            "Deferred {} inactive worktree(s) still within retention",
+            "Deferred {} inactive worktree(s) for retention or safety",
             outcome.retained_session_ids.len()
         ));
         for session_id in &outcome.retained_session_ids {
@@ -5068,7 +5214,6 @@ fn build_legacy_migration_audit_report(source: &Path) -> Result<LegacyMigrationA
             mapping: vec![
                 "ecc graph connector-sync".to_string(),
                 "ecc graph recall".to_string(),
-                "WORKING-CONTEXT.md".to_string(),
             ],
             notes: vec![
                 "Import only sanitized operator memory into the shared context graph."
@@ -8534,6 +8679,96 @@ mod tests {
     }
 
     #[test]
+    fn harness_eval_cli_requires_explicit_bounded_inputs() {
+        let cli = Cli::try_parse_from([
+            "ecc",
+            "harness-eval",
+            "run",
+            "--candidate",
+            "candidate",
+            "--baseline",
+            "baseline",
+            "--seed",
+            "1",
+            "--seed",
+            "2",
+            "--measurements",
+            "scores.json",
+            "--evidence-ref",
+            "evidence://run",
+            "--min-samples",
+            "2",
+            "--min-mean-delta",
+            "0.1",
+            "--min-win-rate",
+            "0.5",
+        ])
+        .expect("valid harness evaluation command");
+        match cli.command {
+            Some(Commands::HarnessEval {
+                command:
+                    HarnessEvalCommands::Run {
+                        seeds, min_samples, ..
+                    },
+            }) => {
+                assert_eq!(seeds, vec![1, 2]);
+                assert_eq!(min_samples, 2);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        assert!(Cli::try_parse_from([
+            "ecc",
+            "harness-eval",
+            "run",
+            "--candidate",
+            "c",
+            "--baseline",
+            "b"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn harness_eval_bounded_input_rejects_content_over_limit() -> Result<()> {
+        let tempdir = TestDir::new("harness-eval-oversized-input")?;
+        let input = tempdir.path().join("measurements.json");
+        fs::write(&input, b"12345")?;
+
+        let error = read_bounded_file(&input, 4, "recorded measurements")
+            .expect_err("input larger than the byte limit must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recorded measurements exceeds the 4-byte limit"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn harness_eval_bounded_input_rejects_non_regular_file() -> Result<()> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let tempdir = TestDir::new("harness-eval-non-regular-input")?;
+        let input = tempdir.path().join("measurements.fifo");
+        let input_c = CString::new(input.as_os_str().as_bytes())?;
+        // SAFETY: `input_c` is a valid, NUL-terminated path and the mode is valid.
+        let result = unsafe { libc::mkfifo(input_c.as_ptr(), 0o600) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let error = read_bounded_file(&input, 4, "recorded measurements")
+            .expect_err("non-regular input must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recorded measurements must be a regular file"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn worktree_policy_explicit_flags_override_config_setting() {
         let mut cfg = Config::default();
         cfg.auto_create_worktrees = false;
@@ -9417,7 +9652,7 @@ mod tests {
         assert!(text.contains("- cleaned deadbeef"));
         assert!(text.contains("Skipped 1 active session(s) still holding worktrees"));
         assert!(text.contains("- active facefeed"));
-        assert!(text.contains("Deferred 1 inactive worktree(s) still within retention"));
+        assert!(text.contains("Deferred 1 inactive worktree(s) for retention or safety"));
         assert!(text.contains("- retained retain12"));
     }
 
@@ -11979,7 +12214,7 @@ Customer wiped setup and got charged twice after reinstalling.
         db.insert_session(&session::Session {
             id: "session-1".to_string(),
             task: "knowledge import".to_string(),
-            project: "everything-claude-code".to_string(),
+            project: "ecc".to_string(),
             task_group: "memory".to_string(),
             agent_type: "claude".to_string(),
             working_dir: PathBuf::from("/tmp"),
@@ -12066,7 +12301,7 @@ Guide users to repair before reinstall so wiped setups do not buy twice.
         db.insert_session(&session::Session {
             id: "session-1".to_string(),
             task: "knowledge import".to_string(),
-            project: "everything-claude-code".to_string(),
+            project: "ecc".to_string(),
             task_group: "memory".to_string(),
             agent_type: "claude".to_string(),
             working_dir: PathBuf::from("/tmp"),
@@ -12255,7 +12490,7 @@ INVALID LINE
         db.insert_session(&session::Session {
             id: "session-1".to_string(),
             task: "memory import".to_string(),
-            project: "everything-claude-code".to_string(),
+            project: "ecc".to_string(),
             task_group: "memory".to_string(),
             agent_type: "claude".to_string(),
             working_dir: PathBuf::from("/tmp"),

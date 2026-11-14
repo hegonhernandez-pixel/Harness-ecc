@@ -14,6 +14,7 @@ from llm.core.interface import (
     RateLimitError,
 )
 from llm.core.types import LLMInput, LLMOutput, ModelInfo, ProviderType, Role, ToolCall
+from llm.providers.messages import anthropic_messages
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"
 _OPUS_ADAPTIVE_ONLY_PREFIXES = ("claude-opus-4-7", "claude-opus-4-8")
@@ -26,7 +27,9 @@ def _uses_adaptive_thinking_only(model: str) -> bool:
 class ClaudeProvider(LLMProvider):
     provider_type = ProviderType.CLAUDE
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None,
+                 default_model: str | None = None) -> None:
+        self.default_model = default_model or _DEFAULT_MODEL
         self.client = Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"), base_url=base_url)
         self._models = [
             ModelInfo(
@@ -57,11 +60,9 @@ class ClaudeProvider(LLMProvider):
 
     def generate(self, input: LLMInput) -> LLMOutput:
         try:
-            model = input.model or _DEFAULT_MODEL
+            model = input.model or self.default_model
             system_parts = [msg.content for msg in input.messages if msg.role == Role.SYSTEM]
-            api_messages = [
-                msg.to_dict() for msg in input.messages if msg.role not in (Role.SYSTEM,)
-            ]
+            api_messages = anthropic_messages(input.messages)
 
             params: dict[str, Any] = {
                 "model": model,
@@ -139,4 +140,4 @@ class ClaudeProvider(LLMProvider):
         return bool(self.client.api_key)
 
     def get_default_model(self) -> str:
-        return _DEFAULT_MODEL
+        return self.default_model

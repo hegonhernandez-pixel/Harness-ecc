@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-Common issues and solutions for Everything Claude Code (ECC) plugin.
+Common issues and solutions for ECC plugin.
 
 ## Table of Contents
 
@@ -264,7 +264,7 @@ mv ~/.claude/plugins/cache ~/.claude/plugins/cache.backup.$(date +%Y%m%d-%H%M%S)
 mkdir -p ~/.claude/plugins/cache
 
 # Reinstall from marketplace
-# Claude Code → Extensions → Everything Claude Code → Uninstall
+# Claude Code → Extensions → ECC → Uninstall
 # Then reinstall from marketplace
 
 # If the issue is marketplace/account access, use ECC Tools billing/account recovery separately; do not use reinstall as a proxy for account recovery
@@ -274,8 +274,8 @@ claude --version
 # Requires Claude Code 2.0+
 
 # Manual install (if marketplace fails)
-git clone https://github.com/affaan-m/everything-claude-code.git
-cp -r everything-claude-code ~/.claude/plugins/ecc
+git clone https://github.com/affaan-m/ECC.git
+cp -r ECC ~/.claude/plugins/ecc
 ```
 
 ### Package Manager Detection Fails
@@ -304,6 +304,44 @@ npm pkg set packageManager="pnpm@8.15.0"
 # Only do this when intentionally switching package managers.
 rm package-lock.json  # If using pnpm/yarn/bun
 ```
+
+### OpenCode Fails to Start on Termux/Android
+
+**Symptom:** Changed-files tracking silently stops working (a one-time
+`[ECC] changed-files tracking disabled` warning appears in the OpenCode
+logs), or (on older versions) `opencode` crashes on startup entirely with a
+Bun `ResolveMessage`, e.g.:
+
+```
+ResolveMessage: Cannot find module '../plugins/lib/changed-files-store.js' from '.../.opencode/tools/changed-files.ts'
+```
+
+**Causes:**
+- The `~/.opencode` install is missing or incomplete for this machine —
+  usually `tools/` and `plugins/` are present but `plugins/lib/` never
+  finished copying (an interrupted install, or a storage/permission hiccup
+  that's more common on Android's filesystem). Both the `changed-files` tool
+  and the `ecc-hooks` plugin depend on `plugins/lib/changed-files-store.js`;
+  since `ecc-hooks.ts` is OpenCode's plugin entry point (loaded once at
+  session startup, before `tools/index.ts`'s barrel file), a missing
+  dependency there used to crash the entire OpenCode session before any
+  hooks could load — not just the one tool.
+
+**Solutions:**
+```bash
+# From the ECC repo, check for and repair missing/incomplete managed files
+ecc doctor --target opencode
+ecc repair --target opencode
+
+# If that reports no drift but plugins/ is still missing on the device,
+# re-run the ECC installer for the opencode target
+```
+
+**Note:** If you're also seeing `ProviderModelNotFoundError: Model not found: openai/gpt-5.5`
+referencing `~/.config/opencode/oh-my-opencode-slim.json`, that file belongs to the
+third-party [`oh-my-opencode-slim`](https://github.com/alvinunreal/oh-my-opencode-slim)
+plugin, not ECC — ECC never writes to `~/.config/opencode/`. Fix the model prefix
+(`opencode/...` instead of `openai/...`) there, or file it against that project.
 
 ---
 
@@ -406,7 +444,7 @@ find ~/.claude/plugins -name "*.sh" -exec dos2unix {} \;
 
  If you're still experiencing issues:
 
-1. **Check GitHub Issues**: [github.com/affaan-m/everything-claude-code/issues](https://github.com/affaan-m/everything-claude-code/issues)
+1. **Check GitHub Issues**: [github.com/affaan-m/ECC/issues](https://github.com/affaan-m/ECC/issues)
 2. **Enable Debug Logging**:
    ```bash
    export CLAUDE_DEBUG=1

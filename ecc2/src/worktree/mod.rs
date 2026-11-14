@@ -233,6 +233,45 @@ pub fn remove(worktree: &WorktreeInfo) -> Result<()> {
     Ok(())
 }
 
+/// Conservatively prune an inactive worktree while retaining its branch.
+/// Callers must exclude concurrent external writers: Git's final cleanliness check
+/// protects tracked/untracked changes but does not protect newly created ignored files.
+pub fn prune_if_safe(worktree: &WorktreeInfo) -> Result<bool> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&worktree.path)
+        .args([
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignored",
+        ])
+        .output()
+        .context("Failed to inspect worktree before pruning")?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        return Ok(false);
+    }
+    let merged = Command::new("git")
+        .arg("-C")
+        .arg(&worktree.path)
+        .args(["merge-base", "--is-ancestor", "HEAD"])
+        .arg(format!("refs/heads/{}", worktree.base_branch))
+        .output()
+        .context("Failed to check worktree ancestry")?;
+    if !merged.status.success() {
+        return Ok(false);
+    }
+    let repo_root = base_checkout_path(worktree)?;
+    let removed = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["worktree", "remove"])
+        .arg(&worktree.path)
+        .output()
+        .context("Failed to prune worktree")?;
+    Ok(removed.status.success())
+}
+
 /// List all active worktrees.
 pub fn list() -> Result<Vec<String>> {
     let output = Command::new("git")
@@ -517,8 +556,8 @@ pub fn create_draft_pr_with_options(
 }
 
 pub fn github_compare_url(worktree: &WorktreeInfo) -> Result<Option<String>> {
-    let repo_root = base_checkout_path(worktree)?;
-    let origin = git_remote_origin_url(&repo_root)?;
+    // Remote configuration is shared by linked worktrees and the main checkout.
+    let origin = git_remote_origin_url(&worktree.path)?;
     let Some(repo_url) = github_repo_web_url(&origin) else {
         return Ok(None);
     };
@@ -1668,6 +1707,37 @@ mod tests {
         run_git(&repo, &["commit", "-m", "init"])?;
 
         Ok(repo)
+    }
+
+    #[test]
+    fn prune_if_safe_preserves_work_and_unmerged_commits() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("ecc2-safe-prune-{}", Uuid::new_v4()));
+        let repo = init_repo(&root)?;
+        let cfg = Config {
+            worktree_root: root.join("worktrees"),
+            ..Config::default()
+        };
+        let worktree = create_for_session_in_repo("safe-prune", &cfg, &repo)?;
+        fs::write(worktree.path.join("untracked.txt"), "valuable")?;
+        assert!(!prune_if_safe(&worktree)?);
+        fs::remove_file(worktree.path.join("untracked.txt"))?;
+        fs::write(worktree.path.join("README.md"), "valuable modification")?;
+        assert!(!prune_if_safe(&worktree)?);
+        run_git(&worktree.path, &["add", "README.md"])?;
+        assert!(!prune_if_safe(&worktree)?);
+        run_git(&worktree.path, &["commit", "-m", "unmerged work"])?;
+        assert!(!prune_if_safe(&worktree)?);
+        run_git(&repo, &["merge", "--ff-only", &worktree.branch])?;
+        // Ignored files are also retained, despite normal git status hiding them.
+        fs::write(repo.join(".git/info/exclude"), "secret.bin\n")?;
+        fs::write(worktree.path.join("secret.bin"), "valuable ignored data")?;
+        assert!(!prune_if_safe(&worktree)?);
+        fs::remove_file(worktree.path.join("secret.bin"))?;
+        assert!(prune_if_safe(&worktree)?);
+        assert!(!worktree.path.exists());
+        run_git(&repo, &["rev-parse", "--verify", &worktree.branch])?;
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]

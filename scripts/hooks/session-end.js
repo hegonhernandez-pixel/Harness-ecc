@@ -11,8 +11,10 @@
 
 const path = require('path');
 const fs = require('fs');
-const { getSessionsDir, getDateString, getTimeString, getSessionIdShort, sanitizeSessionId, getProjectName, ensureDir, readFile, writeFile, runCommand, stripAnsi, log } = require('../lib/utils');
+const { getSessionsDir, getDateString, getTimeString, getSessionIdShort, sanitizeSessionId, getProjectName, getRepoIdentity, readFile, runCommand, stripAnsi, log } = require('../lib/utils');
 const { generateSessionSummary, getContextRemainingPct, getContextThreshold } = require('../lib/llm-summary');
+
+const { readTranscriptTail, redactSessionSecrets, writePrivateSessionFile } = require('../lib/session-privacy');
 
 const SUMMARY_START_MARKER = '<!-- ECC:SUMMARY:START -->';
 const SUMMARY_END_MARKER = '<!-- ECC:SUMMARY:END -->';
@@ -26,7 +28,8 @@ const SESSION_SEPARATOR = '\n---\n';
  * - Files modified
  */
 function extractSessionSummary(transcriptPath) {
-  const content = readFile(transcriptPath);
+  const transcript = readTranscriptTail(transcriptPath);
+  const content = transcript?.text;
   if (!content) return null;
 
   const lines = content.split('\n').filter(Boolean);
@@ -43,9 +46,16 @@ function extractSessionSummary(transcriptPath) {
       if (entry.type === 'user' || entry.role === 'user' || entry.message?.role === 'user') {
         // Support both direct content and nested message.content (Claude Code JSONL format)
         const rawContent = entry.message?.content ?? entry.content;
+        // Skip tool_result carrier turns — they are not user asks.
+        const isToolResult = Array.isArray(rawContent) && rawContent.some(c => c && c.type === 'tool_result');
         const text = typeof rawContent === 'string' ? rawContent : Array.isArray(rawContent) ? rawContent.map(c => (c && c.text) || '').join(' ') : '';
-        const cleaned = stripAnsi(text).trim();
-        if (cleaned) {
+        const cleaned = redactSessionSecrets(stripAnsi(text)).trim();
+        // Skip harness noise: local command echoes, caveats, system reminders.
+        const isNoise = /^<(local-command-caveat|local-command-stdout|command-name|command-message|command-args|system-reminder|task-notification)/i.test(cleaned);
+        // `isMeta` is also used for genuine channel- and plugin-originated
+        // human prompts. Exclude known structured noise above instead of
+        // discarding every metadata-marked user turn.
+        if (cleaned && !isToolResult && !isNoise) {
           userMessages.push(cleaned.slice(0, 200));
         }
       }
@@ -90,6 +100,7 @@ function extractSessionSummary(transcriptPath) {
     userMessages: userMessages.slice(-10), // Last 10 user messages
     toolsUsed: Array.from(toolsUsed).slice(0, 20),
     filesModified: Array.from(filesModified).slice(0, 30),
+    transcriptTruncated: transcript.truncated,
     totalMessages: userMessages.length
   };
 }
@@ -123,7 +134,8 @@ function getSessionMetadata() {
   return {
     project: getProjectName() || 'unknown',
     branch: branchResult.success ? branchResult.output : 'unknown',
-    worktree: process.cwd()
+    worktree: process.cwd(),
+    repo: getRepoIdentity()
   };
 }
 
@@ -138,16 +150,20 @@ function buildSessionHeader(today, currentTime, metadata, existingContent = '') 
   const date = extractHeaderField(existingContent, 'Date') || today;
   const started = extractHeaderField(existingContent, 'Started') || currentTime;
 
-  return [
+  const lines = [
     heading,
     `**Date:** ${date}`,
     `**Started:** ${started}`,
     `**Last Updated:** ${currentTime}`,
     `**Project:** ${metadata.project}`,
     `**Branch:** ${metadata.branch}`,
-    `**Worktree:** ${metadata.worktree}`,
-    ''
-  ].join('\n');
+    `**Worktree:** ${metadata.worktree}`
+  ];
+  if (metadata.repo) {
+    lines.push(`**Repo:** ${metadata.repo}`);
+  }
+  lines.push('');
+  return lines.join('\n');
 }
 
 function mergeSessionHeader(content, today, currentTime, metadata) {
@@ -181,6 +197,29 @@ async function main() {
     }
   }
 
+  // ECC's LLM summary helper launches a one-shot Claude subprocess whose Stop
+  // hooks inherit this dedicated marker. Skip that known internal session
+  // before touching session state. Transcript cardinality is not a safe proxy:
+  // an ordinary user session may legitimately contain one prompt and no tools.
+  if (process.env.ECC_LLM_SUMMARY_SUBPROCESS === '1') {
+    log('[SessionEnd] Skipped ECC LLM summary subprocess');
+    return;
+  }
+
+  // Read known transcripts before resolving session metadata or touching the
+  // session directory. Missing, unreadable, or unparseable transcript data keeps
+  // the established fallback behavior because it cannot be classified reliably.
+  let summary = null;
+  let transcriptExists = false;
+  if (transcriptPath) {
+    transcriptExists = fs.existsSync(transcriptPath);
+    if (transcriptExists) {
+      summary = extractSessionSummary(transcriptPath);
+    } else {
+      log(`[SessionEnd] Transcript not found: ${transcriptPath}`);
+    }
+  }
+
   const sessionsDir = getSessionsDir();
   const today = getDateString();
   // Derive shortId from transcript_path UUID when available, using the SAME
@@ -207,25 +246,12 @@ async function main() {
   const sessionFile = path.join(sessionsDir, `${today}-${shortId}-session.tmp`);
   const sessionMetadata = getSessionMetadata();
 
-  ensureDir(sessionsDir);
-
   const currentTime = getTimeString();
-
-  // Try to extract summary from transcript
-  let summary = null;
-
-  if (transcriptPath) {
-    if (fs.existsSync(transcriptPath)) {
-      summary = extractSessionSummary(transcriptPath);
-    } else {
-      log(`[SessionEnd] Transcript not found: ${transcriptPath}`);
-    }
-  }
 
   // Decide whether to call LLM for a richer summary.
   // Triggers: context remaining < 20%, or every 50 user messages as a baseline.
   let llmSummary = null;
-  if (transcriptPath && summary && fs.existsSync(transcriptPath)) {
+  if (transcriptPath && summary && transcriptExists) {
     const contextPct = getContextRemainingPct(transcriptPath);
     const isContextLow = contextPct !== null && contextPct < getContextThreshold();
     const interval = parseInt(process.env.ECC_LLM_SUMMARY_INTERVAL || '50', 10);
@@ -234,6 +260,7 @@ async function main() {
     if (isContextLow || isPeriodicTurn) {
       log(`[SessionEnd] LLM summary triggered (context: ${contextPct ?? 'unknown'}%, messages: ${summary.totalMessages})`);
       llmSummary = generateSessionSummary(transcriptPath);
+      if (llmSummary) llmSummary = redactSessionSecrets(llmSummary);
       if (llmSummary) {
         log('[SessionEnd] LLM summary generated successfully');
       } else {
@@ -270,14 +297,14 @@ async function main() {
       } else {
         // Migration path for files created before summary markers existed.
         updatedContent = updatedContent.replace(
-          /## (?:Session Summary|Current State)[\s\S]*?$/,
-          () => `${summaryBlock}\n\n### Notes for Next Session\n-\n\n### Context to Load\n\`\`\`\n[relevant files]\n\`\`\`\n`
+          /## (?:Session Summary|Current State)[\s\S]*?(?=\n### (?:Notes for Next Session|Context to Load)\b|$)/,
+          () => `${summaryBlock}\n`
         );
       }
     }
 
     if (updatedContent) {
-      writeFile(sessionFile, updatedContent);
+      writePrivateSessionFile(sessionFile, updatedContent);
     }
 
     log(`[SessionEnd] Updated session file: ${sessionFile}`);
@@ -291,7 +318,7 @@ async function main() {
     const template = `${buildSessionHeader(today, currentTime, sessionMetadata)}${SESSION_SEPARATOR}${summarySection}
 `;
 
-    writeFile(sessionFile, template);
+    writePrivateSessionFile(sessionFile, template);
     log(`[SessionEnd] Created session file: ${sessionFile}`);
   }
 
@@ -322,13 +349,13 @@ function buildSummarySection(summary) {
     section += `### Tools Used\n${summary.toolsUsed.join(', ')}\n\n`;
   }
 
-  section += `### Stats\n- Total user messages: ${summary.totalMessages}\n`;
+  section += `### Stats\n- ${summary.transcriptTruncated ? 'User messages in last 4 MiB (older context omitted)' : 'Total user messages'}: ${summary.totalMessages}\n`;
 
   return section;
 }
 
 function buildSummaryBlock(summary) {
-  return `${SUMMARY_START_MARKER}\n${buildSummarySection(summary).trim()}\n${SUMMARY_END_MARKER}`;
+  return `${SUMMARY_START_MARKER}\n${redactSessionSecrets(buildSummarySection(summary).trim())}\n${SUMMARY_END_MARKER}`;
 }
 
 function escapeRegExp(value) {

@@ -15,7 +15,7 @@ const http = require('http');
 const path = require('path');
 
 const { buildAllowedHostnames, isAllowedHostHeader, isAllowedOrigin } = require('../loopback-guard');
-const { renderMarkdown } = require('./markdown');
+const { escapeHtml, renderMarkdown } = require('./markdown');
 const { artifactSdkJs } = require('./sdk');
 const {
   canvasCss,
@@ -29,6 +29,14 @@ const DEFAULT_PORT = 4517;
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_BODY_BYTES = 1024 * 1024;
+// How long the "agent is thinking" indicator survives without the agent
+// checking back in, before presence decays to the honest queued/waiting.
+const DEFAULT_THINKING_STALE_MS = 90 * 1000;
+// An explicit typing signal expires faster: it means "a reply is seconds away".
+const DEFAULT_TYPING_EXPIRY_MS = 30 * 1000;
+// Presence is push-based, so expiring states need a tick to re-broadcast on.
+const DEFAULT_PRESENCE_SWEEP_MS = 5 * 1000;
+const TYPING_STATES = new Set(['thinking', 'typing', 'idle']);
 
 const CONTENT_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -93,14 +101,132 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
+// Artifact pages render inside a sandboxed iframe (no allow-same-origin) and
+// legitimately run CDN scripts (Mermaid) plus inline loaders, so the default
+// restrictive CSP cannot apply. A sandbox-only CSP mirrors the iframe
+// attribute instead: scripts keep working, but the document gets an opaque
+// origin, which neuters direct-navigation abuse of the loopback API (no CORS
+// reads, JSON POSTs are preflight-blocked) without changing in-iframe
+// behavior. A hostile <meta> CSP in a raw HTML artifact can only narrow this
+// further, never loosen it.
+const ARTIFACT_CSP = 'sandbox allow-scripts allow-forms allow-popups';
+
 function sendHtml(res, statusCode, html, { csp = true } = {}) {
   const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
-  if (csp) {
+  if (csp === 'artifact') {
+    headers['content-security-policy'] = ARTIFACT_CSP;
+  } else if (csp) {
     headers['content-security-policy'] =
       "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'";
   }
   res.writeHead(statusCode, headers);
   res.end(html);
+}
+
+// Sibling assets have an explicit 64 MiB resource limit (413 above it), separate
+// from request-body limits. Reads use at most the sampled size plus one sentinel.
+const MAX_ARTIFACT_ASSET_BYTES = 64 * 1024 * 1024;
+
+function assetReadError(code = 'EARTIFACT_UNSAFE') {
+  return Object.assign(new Error('Artifact sibling read refused'), { code });
+}
+
+function sameAssetIdentity(before, after) {
+  return before.dev === after.dev && before.ino === after.ino && before.mode === after.mode;
+}
+
+function sameAssetFile(before, after) {
+  return after.isFile() && sameAssetIdentity(before, after) && before.size === after.size
+    && (before.mtimeNs ?? before.mtimeMs) === (after.mtimeNs ?? after.mtimeMs)
+    && (before.ctimeNs ?? before.ctimeMs) === (after.ctimeNs ?? after.ctimeMs);
+}
+
+function assetByteLength(stats) {
+  if (typeof stats.size !== 'bigint' && !Number.isSafeInteger(stats.size)) throw assetReadError();
+  const size = BigInt(stats.size);
+  if (size < 0n) throw assetReadError();
+  if (size > BigInt(MAX_ARTIFACT_ASSET_BYTES)) throw assetReadError('EARTIFACT_TOO_LARGE');
+  return Number(size);
+}
+
+function snapshotAssetChain(realTarget) {
+  const root = path.parse(realTarget).root;
+  const parts = path.relative(root, realTarget).split(path.sep).filter(Boolean);
+  const paths = [root];
+  for (const part of parts) paths.push(path.join(paths[paths.length - 1], part));
+  return paths.map((entryPath, index) => {
+    const stats = fs.lstatSync(entryPath, { bigint: true });
+    const leaf = index === paths.length - 1;
+    if (stats.isSymbolicLink() || !(leaf ? stats.isFile() : stats.isDirectory())) throw assetReadError();
+    return { path: entryPath, stats, leaf };
+  });
+}
+
+function revalidateAssetPath({ baseDir, resolved, realBase, realTarget, chain }) {
+  if (fs.realpathSync(baseDir) !== realBase || fs.realpathSync(resolved) !== realTarget) throw assetReadError();
+  for (const entry of chain) {
+    const current = fs.lstatSync(entry.path, { bigint: true });
+    if (current.isSymbolicLink() || !(entry.leaf ? sameAssetFile(entry.stats, current)
+      : current.isDirectory() && sameAssetIdentity(entry.stats, current))) throw assetReadError();
+  }
+}
+
+function readAssetDescriptor(fd, size) {
+  const buffer = Buffer.alloc(size + 1);
+  let bytes = 0;
+  while (bytes < buffer.length) {
+    const requested = buffer.length - bytes;
+    const count = fs.readSync(fd, buffer, bytes, requested, bytes);
+    if (!Number.isInteger(count) || count < 0 || count > requested) throw assetReadError();
+    if (count === 0) break;
+    bytes += count;
+  }
+  if (bytes !== size) throw assetReadError();
+  return buffer.subarray(0, bytes);
+}
+
+// Canonical ancestors are sampled from the filesystem root, not just realBase.
+// Revalidation detects observed replacements, but portable pathname operations
+// are not atomic openat confinement: repeated swap/restore or same-inode content
+// races can evade observations. This helper covers siblings only, not the direct
+// session.file read. O_NOFOLLOW protects the leaf only where the flag exists.
+function readSiblingAsset(baseDir, resolved) {
+  const realBase = fs.realpathSync(baseDir);
+  const realTarget = fs.realpathSync(resolved);
+  const relative = path.relative(realBase, realTarget);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw assetReadError();
+  const chain = snapshotAssetChain(realTarget);
+  const expected = chain[chain.length - 1].stats;
+  const size = assetByteLength(expected);
+  const snapshot = { baseDir, resolved, realBase, realTarget, chain };
+  revalidateAssetPath(snapshot);
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0);
+  let fd;
+  try {
+    fd = fs.openSync(realTarget, flags);
+  } catch (error) {
+    if (error.code === 'ELOOP' || error.code === 'ENOTDIR') throw assetReadError();
+    throw error;
+  }
+  let primaryError;
+  let data;
+  try {
+    if (!sameAssetFile(expected, fs.fstatSync(fd, { bigint: true }))) throw assetReadError();
+    revalidateAssetPath(snapshot);
+    data = readAssetDescriptor(fd, size);
+    if (!sameAssetFile(expected, fs.fstatSync(fd, { bigint: true }))) throw assetReadError();
+    revalidateAssetPath(snapshot);
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    try { fs.closeSync(fd); } catch (error) {
+      // A close error may mean the fd is already released; never retry it or
+      // replace the primary read/validation failure. Close-only failure refuses.
+      if (!primaryError) primaryError = error;
+    }
+  }
+  if (primaryError) throw primaryError;
+  return { data, realTarget };
 }
 
 function createPlanCanvasServer({
@@ -109,6 +235,9 @@ function createPlanCanvasServer({
   version = '0.0.0',
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   heartbeatMs = 15000,
+  thinkingStaleMs = DEFAULT_THINKING_STALE_MS,
+  typingExpiryMs = DEFAULT_TYPING_EXPIRY_MS,
+  presenceSweepMs = DEFAULT_PRESENCE_SWEEP_MS,
   onIdleShutdown = null,
   log = () => {}
 } = {}) {
@@ -119,18 +248,40 @@ function createPlanCanvasServer({
   wake.setMaxListeners(0);
   const sseClients = new Map(); // key -> Set<res>
   const awaitCounts = new Map(); // key -> active long-poll count
-  const workingKeys = new Set(); // keys whose agent took feedback and is off working
+  const workingKeys = new Map(); // key -> ms timestamp the agent took feedback
+  const typingKeys = new Map(); // key -> ms timestamp the agent signalled composing
   const watchers = new Map(); // key -> fs.FSWatcher
+  const lastPresence = new Map(); // key -> last broadcast state, for sweep diffing
   let idleTimer = null;
+  let presenceSweep = null;
   let closed = false;
 
   // --- presence + SSE ---------------------------------------------------
 
-  function presenceFor(key) {
+  /**
+   * Presence never claims more than the server actually knows:
+   *
+   *   ended     session is closed
+   *   typing    agent signalled it is composing a reply (self-expiring)
+   *   thinking  agent took the feedback and is working on it (self-expiring)
+   *   listening an `await` long poll is parked on this session right now
+   *   queued    feedback is sitting undelivered with nobody listening
+   *   waiting   nothing queued, nobody listening
+   *
+   * `thinking` and `typing` expire on their own so a crashed or distracted
+   * agent decays to an honest `queued`/`waiting` instead of spinning forever.
+   * The old `working` pill had no expiry and no re-broadcast, so it stuck at
+   * "agent working" while nothing at all was listening.
+   */
+  function presenceFor(key, now = Date.now()) {
     const session = store.get(key);
     if (!session || session.status === 'ended') return 'ended';
+    const typingAt = typingKeys.get(key);
+    if (typingAt !== undefined && now - typingAt < typingExpiryMs) return 'typing';
+    const workingAt = workingKeys.get(key);
+    if (workingAt !== undefined && now - workingAt < thinkingStaleMs) return 'thinking';
     if ((awaitCounts.get(key) || 0) > 0) return 'listening';
-    return workingKeys.has(key) ? 'working' : 'waiting';
+    return session.pendingFeedback && session.pendingFeedback.length > 0 ? 'queued' : 'waiting';
   }
 
   function broadcast(key, event, payload) {
@@ -141,7 +292,36 @@ function createPlanCanvasServer({
   }
 
   function broadcastPresence(key) {
-    broadcast(key, 'presence', { state: presenceFor(key) });
+    const state = presenceFor(key);
+    lastPresence.set(key, state);
+    broadcast(key, 'presence', { state });
+  }
+
+  // Re-broadcast only where an expiry actually changed the answer, so an
+  // untouched canvas sees the thinking bubble clear itself.
+  function sweepPresence() {
+    for (const key of sseClients.keys()) {
+      const state = presenceFor(key);
+      if (lastPresence.get(key) !== state) broadcastPresence(key);
+    }
+  }
+
+  function startPresenceSweep() {
+    if (presenceSweep || !presenceSweepMs) return;
+    presenceSweep = setInterval(sweepPresence, presenceSweepMs);
+    if (presenceSweep.unref) presenceSweep.unref();
+  }
+
+  // The agent is off working on this feedback batch; start the thinking clock.
+  function markThinking(key) {
+    workingKeys.set(key, Date.now());
+    typingKeys.delete(key);
+  }
+
+  // A reply landed (or the agent picked the session back up): stop pretending.
+  function clearAgentActivity(key) {
+    workingKeys.delete(key);
+    typingKeys.delete(key);
   }
 
   function connectionCount() {
@@ -205,6 +385,7 @@ function createPlanCanvasServer({
   function endSession(key, endedBy) {
     const session = store.end(key, endedBy);
     if (!session) return null;
+    clearAgentActivity(key);
     wake.emit(`wake:${key}`);
     broadcast(key, 'ended', { endedBy: session.endedBy });
     broadcastPresence(key);
@@ -260,7 +441,7 @@ function createPlanCanvasServer({
 
       const first = store.takeFeedback(key);
       if (first.status !== 'waiting') {
-        if (first.status === 'feedback') workingKeys.add(key);
+        if (first.status === 'feedback') markThinking(key);
         broadcastPresence(key);
         return sendJson(res, 200, first);
       }
@@ -268,7 +449,7 @@ function createPlanCanvasServer({
       // Long poll: hold the request open until feedback or session end.
       noteConnectionOpened();
       awaitCounts.set(key, (awaitCounts.get(key) || 0) + 1);
-      workingKeys.delete(key);
+      clearAgentActivity(key);
       broadcastPresence(key);
 
       let settled = false;
@@ -279,7 +460,7 @@ function createPlanCanvasServer({
         settled = true;
         cleanup();
         if (payload) {
-          if (payload.status === 'feedback') workingKeys.add(key);
+          if (payload.status === 'feedback') markThinking(key);
           res.end(JSON.stringify(payload));
         }
         broadcastPresence(key);
@@ -328,7 +509,7 @@ function createPlanCanvasServer({
       return sendJson(res, 200, { status: 'ended', endedBy: 'agent' });
     }
 
-    const sessionMatch = pathname.match(/^\/api\/session\/([a-f0-9]{12})\/(feedback|end|reply)$/);
+    const sessionMatch = pathname.match(/^\/api\/session\/([a-f0-9]{12})\/(feedback|end|reply|typing)$/);
     if (sessionMatch && req.method === 'POST') {
       const [, key, action] = sessionMatch;
       const session = store.get(key);
@@ -341,7 +522,17 @@ function createPlanCanvasServer({
         wake.emit(`wake:${key}`);
         broadcast(key, 'chat-sync', { chat: store.get(key).chat });
         if (body.endSession) broadcast(key, 'ended', { endedBy: 'user' });
-        return sendJson(res, 200, { status: 'queued', accepted: result.accepted.length, pending: result.pending });
+        // A parked `await` takes the batch synchronously on the wake above, so
+        // presence is already `thinking` by now; with nobody listening it
+        // reports `queued`. Either way the browser must be told, which the
+        // original handler never did, leaving a stale pill on screen.
+        broadcastPresence(key);
+        return sendJson(res, 200, {
+          status: 'queued',
+          accepted: result.accepted.length,
+          pending: result.pending,
+          presence: presenceFor(key)
+        });
       }
 
       if (action === 'end') {
@@ -355,8 +546,25 @@ function createPlanCanvasServer({
           return sendJson(res, 400, { error: 'text is required' });
         }
         const entry = store.addAgentReply(key, body.text);
+        clearAgentActivity(key);
         broadcast(key, 'chat-sync', { chat: store.get(key).chat });
+        broadcastPresence(key);
         return sendJson(res, 200, { status: 'sent', at: entry.at });
+      }
+
+      // Agents drive the chat indicator explicitly: `thinking` while they work,
+      // `typing` right before a reply lands, `idle` to take the bubble down.
+      if (action === 'typing') {
+        const body = await readJsonBody(req);
+        const state = typeof body.state === 'string' ? body.state : 'typing';
+        if (!TYPING_STATES.has(state)) {
+          return sendJson(res, 400, { error: `state must be one of: ${[...TYPING_STATES].join(', ')}` });
+        }
+        if (state === 'idle') clearAgentActivity(key);
+        else if (state === 'typing') typingKeys.set(key, Date.now());
+        else markThinking(key);
+        broadcastPresence(key);
+        return sendJson(res, 200, { status: 'ok', presence: presenceFor(key) });
       }
     }
 
@@ -376,6 +584,8 @@ function createPlanCanvasServer({
     res.write(`event: presence\ndata: ${JSON.stringify({ state: presenceFor(key) })}\n\n`);
     if (!sseClients.has(key)) sseClients.set(key, new Set());
     sseClients.get(key).add(res);
+    lastPresence.set(key, presenceFor(key));
+    startPresenceSweep();
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
     if (ping.unref) ping.unref();
     req.on('close', () => {
@@ -383,7 +593,10 @@ function createPlanCanvasServer({
       const clients = sseClients.get(key);
       if (clients) {
         clients.delete(res);
-        if (clients.size === 0) sseClients.delete(key);
+        if (clients.size === 0) {
+          sseClients.delete(key);
+          lastPresence.delete(key);
+        }
       }
       noteConnectionClosed();
     });
@@ -398,7 +611,7 @@ function createPlanCanvasServer({
       try {
         content = fs.readFileSync(session.file, 'utf8');
       } catch {
-        return sendHtml(res, 404, `<h1>Artifact missing</h1><p>${session.file} no longer exists.</p>`, { csp: false });
+        return sendHtml(res, 404, `<h1>Artifact missing</h1><p>${escapeHtml(session.file)} no longer exists.</p>`);
       }
       const ext = path.extname(session.file).toLowerCase();
       if (ext === '.md' || ext === '.markdown') {
@@ -406,30 +619,43 @@ function createPlanCanvasServer({
           title: path.basename(session.file),
           sdkSrc: '/sdk.js'
         });
-        return sendHtml(res, 200, html, { csp: false });
+        return sendHtml(res, 200, html, { csp: 'artifact' });
       }
       const sdkTag = '<script src="/sdk.js"></script>';
       const injected = content.includes('</body>')
         ? content.replace('</body>', `${sdkTag}\n</body>`)
         : `${content}\n${sdkTag}`;
-      return sendHtml(res, 200, injected, { csp: false });
+      return sendHtml(res, 200, injected, { csp: 'artifact' });
     }
 
     // Sibling assets resolve relative to the artifact's directory and must
-    // stay confined to it.
+    // stay confined to it. The prefix check alone is insufficient: a symlink
+    // inside the directory can point outside it, so the check is repeated
+    // against the real paths and fails closed when they cannot be resolved.
     const baseDir = path.dirname(session.file);
     const resolved = path.resolve(baseDir, assetPath);
     if (resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) {
       return sendJson(res, 403, { error: 'asset path escapes artifact directory' });
     }
+    let realTarget;
     let data;
     try {
-      data = fs.readFileSync(resolved);
-    } catch {
+      ({ data, realTarget } = readSiblingAsset(baseDir, resolved));
+    } catch (error) {
+      if (error.code === 'EARTIFACT_TOO_LARGE') return sendJson(res, 413, { error: 'asset too large' });
+      if (error.code === 'EARTIFACT_UNSAFE') return sendJson(res, 403, { error: 'asset changed or unsafe' });
       return sendJson(res, 404, { error: 'asset not found' });
     }
-    const type = CONTENT_TYPES[path.extname(resolved).toLowerCase()] || 'application/octet-stream';
-    res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+    // MIME comes from the link/request name first so a symlinked asset keeps
+    // the type the page asked for; the target extension is the fallback.
+    const type = CONTENT_TYPES[path.extname(resolved).toLowerCase()]
+      || CONTENT_TYPES[path.extname(realTarget).toLowerCase()]
+      || 'application/octet-stream';
+    const headers = { 'content-type': type, 'cache-control': 'no-store' };
+    if (type.startsWith('text/html') || type === 'image/svg+xml') {
+      headers['content-security-policy'] = ARTIFACT_CSP;
+    }
+    res.writeHead(200, headers);
     return res.end(data);
   }
 
@@ -499,6 +725,9 @@ function createPlanCanvasServer({
   function close() {
     closed = true;
     clearTimeout(idleTimer);
+    clearInterval(presenceSweep);
+    presenceSweep = null;
+    lastPresence.clear();
     for (const key of watchers.keys()) unwatchSession(key);
     for (const clients of sseClients.values()) {
       for (const client of clients) client.end();
@@ -522,12 +751,14 @@ function createPlanCanvasServer({
     });
   }
 
-  return { server, listen, close, presenceFor, watchSession };
+  return { server, listen, close, presenceFor, sweepPresence, watchSession };
 }
 
 module.exports = {
   DEFAULT_HOST,
   DEFAULT_PORT,
+  DEFAULT_THINKING_STALE_MS,
+  DEFAULT_TYPING_EXPIRY_MS,
   createPlanCanvasServer,
   resolveIdleTimeoutMs,
   resolvePort

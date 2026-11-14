@@ -1,8 +1,20 @@
-# Everything Claude Code (ECC) — Agent Talimatları
+# ECC — Agent Talimatları
 
-Bu, yazılım geliştirme için 28 özel agent, 116 skill, 59 command ve otomatik hook iş akışları sağlayan **üretime hazır bir AI kodlama eklentisidir**.
+Bu, yazılım geliştirme için 68 özel agent, 293 skill, 94 command ve otomatik hook iş akışları sağlayan **üretime hazır bir AI kodlama eklentisidir**.
 
-**Sürüm:** 2.0.0
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:f4ecbfc7cecc29661d74d0e4f07723e0a404794dfe9ab8110be00b9c07b8ef75 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:e378e489cf6920715c0ceb0d50df751e871c3bc3b71cc9382b73460f91c5ed87 -->
+
+**Sürüm:** 2.2.4
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Temel İlkeler
 
@@ -47,14 +59,14 @@ Bu, yazılım geliştirme için 28 özel agent, 116 skill, 59 command ve otomati
 ## Agent Orkestrasyonu
 
 Agentları kullanıcı istemi olmadan proaktif olarak kullanın:
-- Karmaşık özellik istekleri → **planner**
-- Yeni yazılan/değiştirilen kod → **code-reviewer**
-- Hata düzeltme veya yeni özellik → **tdd-guide**
-- Mimari karar → **architect**
-- Güvenlik açısından hassas kod → **security-reviewer**
-- Çok kanallı iletişim önceliklendirme → **chief-of-staff**
-- Otonom döngüler / döngü izleme → **loop-operator**
-- Harness yapılandırma güvenilirliği ve maliyeti → **harness-optimizer**
+- Karmaşık özellik istekleri → **ecc:planner**
+- Yeni yazılan/değiştirilen kod → **ecc:code-reviewer**
+- Hata düzeltme veya yeni özellik → **ecc:tdd-guide**
+- Mimari karar → **ecc:architect**
+- Güvenlik açısından hassas kod → **ecc:security-reviewer**
+- Çok kanallı iletişim önceliklendirme → **ecc:chief-of-staff**
+- Otonom döngüler / döngü izleme → **ecc:loop-operator**
+- Harness yapılandırma güvenilirliği ve maliyeti → **ecc:harness-optimizer**
 
 Bağımsız işlemler için paralel yürütme kullanın — birden fazla agenti aynı anda başlatın.
 
@@ -141,9 +153,9 @@ Başarısızlık sorunlarını giderin: test izolasyonunu kontrol edin → mockl
 ## Proje Yapısı
 
 ```
-agents/          — 28 özel subagent
-skills/          — 115 iş akışı skillleri ve alan bilgisi
-commands/        — 59 slash command
+agents/          — 68 özel subagent
+skills/          — 293 iş akışı skillleri ve alan bilgisi
+commands/        — 94 slash command
 hooks/           — Tetikleyici tabanlı otomasyonlar
 rules/           — Her zaman uyulması gereken kurallar (ortak + dile özel)
 scripts/         — Platformlar arası Node.js yardımcı programları

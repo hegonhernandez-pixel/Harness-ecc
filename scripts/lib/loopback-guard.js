@@ -15,8 +15,12 @@ function parseHostHeader(value) {
   if (!value || typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  const match = trimmed.match(/^(\[[^\]]+\]|[^:]+)(?::\d+)?$/);
+  const match = trimmed.match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/);
   if (!match) return null;
+  if (match[2] !== undefined) {
+    const port = Number(match[2]);
+    if (!Number.isInteger(port) || port > 65535) return null;
+  }
   return match[1].toLowerCase();
 }
 
@@ -33,11 +37,16 @@ function isAllowedHostHeader(hostHeader, allowedHostnames) {
 }
 
 // Origin is absent on same-origin navigations and CLI clients; when present
-// it must resolve to an allowed hostname.
-function isAllowedOrigin(originHeader, allowedHostnames) {
-  if (!originHeader || typeof originHeader !== 'string') return true;
+// it must resolve to an allowed hostname. Mutation-capable callers supply
+// expectedOrigin to require an exact HTTP origin, including scheme and port.
+function isAllowedOrigin(originHeader, allowedHostnames, expectedOrigin) {
+  if (originHeader === undefined || originHeader === null || originHeader === '') return true;
+  if (typeof originHeader !== 'string') return false;
   try {
     const url = new URL(originHeader);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return false;
+    if (url.pathname !== '/' || url.search || url.hash) return false;
+    if (expectedOrigin && url.origin !== new URL(expectedOrigin).origin) return false;
     return allowedHostnames.has(url.hostname.toLowerCase());
   } catch {
     return false;

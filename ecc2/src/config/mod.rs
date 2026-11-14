@@ -238,6 +238,8 @@ pub struct Config {
     pub auto_dispatch_limit_per_session: usize,
     pub auto_create_worktrees: bool,
     pub auto_merge_ready_worktrees: bool,
+    /// Opt in only when no external writers use inactive worktrees.
+    pub auto_prune_inactive_worktrees: bool,
     pub desktop_notifications: DesktopNotificationConfig,
     pub webhook_notifications: WebhookNotificationConfig,
     pub completion_summary_notifications: CompletionSummaryConfig,
@@ -290,7 +292,7 @@ impl Default for Config {
             worktree_branch_prefix: "ecc".to_string(),
             max_parallel_sessions: 8,
             max_parallel_worktrees: 6,
-            worktree_retention_secs: 0,
+            worktree_retention_secs: 7 * 24 * 60 * 60,
             session_timeout_secs: 3600,
             heartbeat_interval_secs: 30,
             auto_terminate_stale_sessions: false,
@@ -305,6 +307,7 @@ impl Default for Config {
             auto_dispatch_limit_per_session: 5,
             auto_create_worktrees: true,
             auto_merge_ready_worktrees: false,
+            auto_prune_inactive_worktrees: false,
             desktop_notifications: DesktopNotificationConfig::default(),
             webhook_notifications: WebhookNotificationConfig::default(),
             completion_summary_notifications: CompletionSummaryConfig::default(),
@@ -944,7 +947,7 @@ theme = "Dark"
         );
         assert_eq!(
             config.worktree_retention_secs,
-            defaults.worktree_retention_secs
+            0 // Explicit legacy configuration remains supported.
         );
         assert_eq!(config.cost_budget_usd, defaults.cost_budget_usd);
         assert_eq!(config.token_budget, defaults.token_budget);

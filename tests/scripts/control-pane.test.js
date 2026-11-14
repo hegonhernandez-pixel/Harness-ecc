@@ -114,6 +114,22 @@ function waitForExit(child) {
   });
 }
 
+async function waitForProcessTermination(pid, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+      if (state === 'Z') return;
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for descendant ${pid} to terminate`);
+}
+
 async function fetchLocal(url, options) {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -132,6 +148,65 @@ async function runTests() {
 
   let passed = 0;
   let failed = 0;
+
+  if (await test('refuses unauthenticated non-loopback bindings', async () => {
+    for (const host of ['0.0.0.0', '::', '192.168.1.10', 'example.com']) {
+      assert.throws(() => createControlPaneServer({ host }), /loopback/i);
+      assert.throws(() => parseArgs(['node', 'control-pane', '--host', host]), /loopback/i);
+    }
+  })) passed++; else failed++;
+
+  if (await test('requires exact browser origins and limits request bodies', async () => {
+    const app = createControlPaneServer({ port: 0, repoRoot: REPO_ROOT });
+    await app.listen();
+    try {
+      for (const origin of ['http://localhost:1', app.url.replace(/:\d+$/, ':1'), 'https:' + app.url.slice(5), app.url + '/path']) {
+        const response = await fetch(`${app.url}/api/actions/unknown`, {
+          method: 'POST', headers: { origin }, body: '{}'
+        });
+        assert.strictEqual(response.status, 403, origin);
+      }
+      const oversized = await fetch(`${app.url}/api/actions/unknown`, {
+        method: 'POST', body: JSON.stringify({ query: 'x'.repeat(70000) })
+      });
+      assert.strictEqual(oversized.status, 413);
+      const normal = await fetch(`${app.url}/api/health`, { headers: { origin: app.url } });
+      assert.strictEqual(normal.status, 200);
+    } finally { await app.close(); }
+  })) passed++; else failed++;
+
+  if (await test('escalates termination when an action ignores SIGTERM', async () => {
+    const start = Date.now();
+    const result = await runAction({
+      id: 'ignore-term', command: process.execPath,
+      args: ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 20)"], cwd: REPO_ROOT
+    }, { timeoutMs: 300, killGraceMs: 100 });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.timedOut, true);
+    assert.ok(Date.now() - start < 3000);
+    if (process.platform !== 'win32') assert.strictEqual(result.signal, 'SIGKILL');
+  })) passed++; else failed++;
+
+  if (await test('terminates Unix descendants that retain action output pipes', async () => {
+    if (process.platform !== 'linux') return;
+    for (const descendantStdio of ['inherit', 'ignore']) {
+      const result = await runAction({
+        id: 'descendant', command: process.execPath,
+        args: ['-e', `
+          const child = require('child_process').spawn(process.execPath, ['-e',
+            "process.on('SIGTERM', () => {}); setInterval(() => {}, 20)"
+          ], { stdio: ['ignore', ${JSON.stringify(descendantStdio)}, ${JSON.stringify(descendantStdio)}] });
+          process.stdout.write(String(child.pid));
+          setInterval(() => {}, 20);
+        `], cwd: REPO_ROOT
+      }, { timeoutMs: 400, killGraceMs: 100 });
+      assert.strictEqual(result.timedOut, true);
+      const pid = Number(result.stdout);
+      assert.ok(pid > 0);
+      try { await waitForProcessTermination(pid); }
+      finally { try { process.kill(pid, 'SIGKILL'); } catch (_) { /* Already gone. */ } }
+    }
+  })) passed++; else failed++;
 
   if (
     await test('parses CLI arguments for local-only serving', async () => {
@@ -258,6 +333,65 @@ async function runTests() {
           assert.ok(Array.isArray(prox.links), 'links array present');
           assert.ok(Array.isArray(prox.advisories), 'advisories array present');
           assert.ok(prox.counts && typeof prox.counts === 'object', 'counts present');
+        } finally {
+          await app.close();
+        }
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    await test('serves the control-plane live view page, the view JSON and the event feed', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-control-plane-view-'));
+      const dbPath = path.join(tempDir, 'ecc2.db');
+
+      try {
+        await writeMinimalDatabase(dbPath);
+        const app = await createControlPaneServer({
+          host: '127.0.0.1',
+          port: 0,
+          dbPath,
+          repoRoot: REPO_ROOT,
+          allowActions: false
+        });
+
+        await app.listen();
+        try {
+          const page = await fetchLocal(`${app.url}/control-plane`);
+          assert.strictEqual(page.status, 200);
+          assert.ok((page.headers.get('content-type') || '').includes('text/html'));
+          const html = await page.text();
+          assert.ok(html.includes('ECC Control Plane'), 'page is titled ECC Control Plane');
+          assert.ok(html.includes('<canvas'), 'page renders the 2D projection canvas');
+          assert.ok(html.includes('/api/control-plane'), 'page polls the view feed');
+          assert.ok(!html.includes('<script src='), 'page loads no external scripts');
+
+          const view = await fetchLocal(`${app.url}/api/control-plane`).then(r => r.json());
+          assert.strictEqual(view.schemaVersion, 'ecc.control-plane.view.v1');
+          assert.deepStrictEqual(view.thresholds, { ta: 0.35, ra: 0.7, source: 'static' });
+          assert.ok(Array.isArray(view.tasks) && view.tasks.length === 1, 'one session becomes one task');
+          assert.strictEqual(view.tasks[0].id, 'session-a');
+          assert.strictEqual(view.tasks[0].lane, 'harness:codex');
+          assert.ok(Array.isArray(view.lanes) && view.lanes.length === 1);
+          assert.ok(Array.isArray(view.events) && Array.isArray(view.pairs));
+          assert.strictEqual(view.projection.method, 'pca');
+          assert.deepStrictEqual(view.projection.channels, ['x_tree', 'x_overlap', 'x_dep']);
+          assert.strictEqual(view.inventory.status, 'ok');
+          assert.strictEqual(view.inventory.mode, 'read-only');
+          assert.strictEqual(view.counts.tasks, 1);
+
+          const events = await fetchLocal(`${app.url}/api/control-plane/events`).then(r => r.json());
+          assert.strictEqual(events.schemaVersion, 'ecc.control-plane.view.v1');
+          assert.deepStrictEqual(events.events, []);
+          assert.deepStrictEqual(events.counts, { events: 0, advisories: 0, resolutions: 0 });
+
+          // The airspace page links to the new view.
+          const airspace = await fetchLocal(`${app.url}/proximity`).then(r => r.text());
+          assert.ok(airspace.includes('href="/control-plane"'));
         } finally {
           await app.close();
         }
@@ -545,9 +679,10 @@ async function runTests() {
   if (
     await test('CLI browser opener handles spawn errors', async () => {
       const source = fs.readFileSync(SCRIPT, 'utf8');
-
-      assert.match(source, /child\.on\('error'/);
-      assert.match(source, /child\.unref\(\)/);
+      const helper = fs.readFileSync(path.join(path.dirname(SCRIPT), 'lib/platform-launch.js'), 'utf8');
+      assert.match(source, /require\('\.\/lib\/platform-launch'\)/);
+      assert.match(helper, /child\.on\('error'/);
+      assert.match(helper, /child\.unref\(\)/);
     })
   )
     passed++;

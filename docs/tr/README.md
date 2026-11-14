@@ -1,8 +1,8 @@
-# Everything Claude Code
+# ECC
 
-[![Stars](https://img.shields.io/github/stars/affaan-m/everything-claude-code?style=flat)](https://github.com/affaan-m/everything-claude-code/stargazers)
-[![Forks](https://img.shields.io/github/forks/affaan-m/everything-claude-code?style=flat)](https://github.com/affaan-m/everything-claude-code/network/members)
-[![Contributors](https://img.shields.io/github/contributors/affaan-m/everything-claude-code?style=flat)](https://github.com/affaan-m/everything-claude-code/graphs/contributors)
+[![Stars](https://img.shields.io/github/stars/affaan-m/ECC?style=flat)](https://github.com/affaan-m/ECC/stargazers)
+[![Forks](https://img.shields.io/github/forks/affaan-m/ECC?style=flat)](https://github.com/affaan-m/ECC/network/members)
+[![Contributors](https://img.shields.io/github/contributors/affaan-m/ECC?style=flat)](https://github.com/affaan-m/ECC/graphs/contributors)
 [![npm ecc-universal](https://img.shields.io/npm/dw/ecc-universal?label=ecc-universal%20haftalık%20indirme&logo=npm)](https://www.npmjs.com/package/ecc-universal)
 [![npm ecc-agentshield](https://img.shields.io/npm/dw/ecc-agentshield?label=ecc-agentshield%20haftalık%20indirme&logo=npm)](https://www.npmjs.com/package/ecc-agentshield)
 [![GitHub App Install](https://img.shields.io/badge/GitHub%20App-150%20kurulum-2ea44f?logo=github)](https://github.com/marketplace/ecc-tools)
@@ -23,7 +23,7 @@
 
 **Dil / Language / 语言 / 語言 / Язык / Ngôn ngữ**
 
-[**English**](../../README.md) | [Português (Brasil)](../pt-BR/README.md) | [简体中文](../../README.zh-CN.md) | [繁體中文](../zh-TW/README.md) | [日本語](../ja-JP/README.md) | [한국어](../ko-KR/README.md) | [**Türkçe**](README.md) | [Русский](../ru/README.md) | [Tiếng Việt](../vi-VN/README.md) | [ไทย](../th/README.md) | [Deutsch](../de-DE/README.md)
+[**English**](../../README.md) | [Português (Brasil)](../pt-BR/README.md) | [简体中文](../../README.zh-CN.md) | [繁體中文](../zh-TW/README.md) | [日本語](../ja-JP/README.md) | [한국어](../ko-KR/README.md) | [**Türkçe**](README.md) | [Русский](../ru/README.md) | [Tiếng Việt](../vi-VN/README.md) | [ไทย](../th/README.md) | [Deutsch](../de-DE/README.md) | [Українська](../uk-UA/README.md) | [Polski](../pl/README.md)
 
 </div>
 
@@ -45,12 +45,12 @@ Bu repository yalnızca ham kodu içerir. Rehberler her şeyi açıklıyor.
 <tr>
 <td width="33%">
 <a href="https://x.com/affaanmustafa/status/2012378465664745795">
-<img src="../../assets/images/guides/shorthand-guide.png" alt="Everything Claude Code Kısa Rehberi" />
+<img src="../../assets/images/guides/shorthand-guide.png" alt="ECC Kısa Rehberi" />
 </a>
 </td>
 <td width="33%">
 <a href="https://x.com/affaanmustafa/status/2014040193557471352">
-<img src="../../assets/images/guides/longform-guide.png" alt="Everything Claude Code Uzun Rehberi" />
+<img src="../../assets/images/guides/longform-guide.png" alt="ECC Uzun Rehberi" />
 </a>
 </td>
 <td width="33%">
@@ -79,7 +79,27 @@ Bu repository yalnızca ham kodu içerir. Rehberler her şeyi açıklıyor.
 
 ## Yenilikler
 
-### v2.0.0 — Ajan Harness İşletim Sistemi (Haz 2026)
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:971cf5e8a8547d02f89ae59463b95f651cc14fe79301dc7400aae1ab25700989 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:15ca1f60a17c3f19df95ea4fdf85d5ada7ef63fa6155fdb1cdb86117e56f917d -->
+
+### v2.2.4 — pi/core Profili ve Sürüm Güvenilirliği (Eki 2026)
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+`pi/core` profili projeyi yalnızca ECC olarak adlandırır; sürüm iş akışı yayımlanan paketi doğrulamadan önce npm için beş dakikaya kadar bekler.
+
+### v2.2.2 — Rehberli Çoklu Harness Kurulumu (Ağu 2026)
+
+Claude Code, Codex ve Kimi Code için incelenebilir çoklu harness kurulumu ve eşitlenmiş npm komut girişi eklendi.
+
+### v2.1.0 — Ajan Harness İşletim Sistemi (Haz 2026)
 
 2.0 hattının kararlı sürümü: 261 skill, control-pane altyapısı, MCP envanteri, worktree yaşam döngüsü servisi ve [Discord topluluğu](https://discord.gg/36yGMHGFbR).
 
@@ -114,7 +134,7 @@ Bu repository yalnızca ham kodu içerir. Rehberler her şeyi açıklıyor.
 - **Çapraz harness paritesi** — Claude Code, Cursor, OpenCode ve Codex app/CLI arasında davranış sıkılaştırıldı.
 - **997 internal test geçiyor** — Hook/runtime refactor ve uyumluluk güncellemelerinden sonra tam suite yeşil.
 
-[Tam değişiklik günlüğü için Releases bölümüne bakın](https://github.com/affaan-m/everything-claude-code/releases).
+[Tam değişiklik günlüğü için Releases bölümüne bakın](https://github.com/affaan-m/ECC/releases).
 
 ---
 
@@ -138,8 +158,8 @@ Bu repository yalnızca ham kodu içerir. Rehberler her şeyi açıklıyor.
 
 ```bash
 # Önce repo'yu klonlayın
-git clone https://github.com/affaan-m/everything-claude-code.git
-cd everything-claude-code
+git clone https://github.com/affaan-m/ECC.git
+cd ECC
 
 # Bağımlılıkları kurun (paket yöneticinizi seçin)
 npm install        # veya: pnpm install | yarn install | bun install
@@ -158,8 +178,8 @@ npm install        # veya: pnpm install | yarn install | bun install
 # .\install.ps1 --target cursor typescript
 # .\install.ps1 --target antigravity typescript
 
-# npm-installed uyumluluk entry point'i de çapraz platform çalışır
-npx ecc-install typescript
+# Yayımlanmış npm paketinin entry point'i de çapraz platform çalışır
+npx ecc-universal install typescript
 ```
 
 Manuel kurulum talimatları için `rules/` klasöründeki README'ye bakın.
@@ -233,7 +253,7 @@ export ECC_DISABLED_HOOKS="pre:bash:tmux-reminder,post:edit:typecheck"
 Bu repo bir **Claude Code plugin'i** - doğrudan kurun veya component'leri manuel olarak kopyalayın.
 
 ```
-everything-claude-code/
+ECC/
 |-- .claude-plugin/   # Plugin ve marketplace manifest'leri
 |   |-- plugin.json         # Plugin metadata ve component path'leri
 |   |-- marketplace.json    # /plugin marketplace add için marketplace kataloğu
@@ -365,7 +385,7 @@ Bu, plugin'den mevcut tüm agent'ları, command'ları ve skill'leri gösterir.
 <details>
 <summary><b>Hook'larım çalışmıyor / "Duplicate hooks file" hatası alıyorum</b></summary>
 
-Bu en yaygın sorundur. `.claude-plugin/plugin.json`'a bir `"hooks"` alanı **EKLEMEYİN**. Claude Code v2.1+ kurulu plugin'lerden `hooks/hooks.json`'ı otomatik olarak yükler. Açıkça belirtmek duplicate algılama hatalarına neden olur. Bkz. [#29](https://github.com/affaan-m/everything-claude-code/issues/29), [#52](https://github.com/affaan-m/everything-claude-code/issues/52), [#103](https://github.com/affaan-m/everything-claude-code/issues/103).
+Bu en yaygın sorundur. `.claude-plugin/plugin.json`'a bir `"hooks"` alanı **EKLEMEYİN**. Claude Code v2.1+ kurulu plugin'lerden `hooks/hooks.json`'ı otomatik olarak yükler. Açıkça belirtmek duplicate algılama hatalarına neden olur. Bkz. [#29](https://github.com/affaan-m/ECC/issues/29), [#52](https://github.com/affaan-m/ECC/issues/52), [#103](https://github.com/affaan-m/ECC/issues/103).
 </details>
 
 <details>
@@ -391,10 +411,10 @@ Evet. Seçenek 2'yi (manuel kurulum) kullanın ve yalnızca ihtiyacınız olanı
 
 ```bash
 # Sadece agent'lar
-cp everything-claude-code/agents/*.md ~/.claude/agents/
+cp ECC/agents/*.md ~/.claude/agents/
 
 # Sadece rule'lar
-cp -r everything-claude-code/rules/common ~/.claude/rules/common
+cp -r ECC/rules/common ~/.claude/rules/common
 ```
 
 Her component tamamen bağımsızdır.
@@ -406,8 +426,8 @@ Her component tamamen bağımsızdır.
 Evet. ECC çapraz platformdur:
 - **Cursor**: `.cursor/` içinde önceden çevrilmiş config'ler. [Cursor IDE Desteği](../../README.md#cursor-ide-support) bölümüne bakın.
 - **OpenCode**: `.opencode/` içinde tam plugin desteği. [OpenCode Desteği](../../README.md#opencode-support) bölümüne bakın.
-- **Codex**: macOS app ve CLI için birinci sınıf destek. PR [#257](https://github.com/affaan-m/everything-claude-code/pull/257)'ye bakın.
-- **Antigravity**: İş akışları, skill'ler ve `.agent/` içinde düzleştirilmiş rule'lar için sıkı entegre kurulum.
+- **Codex**: macOS app ve CLI için birinci sınıf destek. PR [#257](https://github.com/affaan-m/ECC/pull/257)'ye bakın.
+- **Antigravity**: İş akışları, skill'ler ve `.agents/` içinde düzleştirilmiş rule'lar için sıkı entegre kurulum.
 - **Claude Code**: Native — bu birincil hedeftir.
 </details>
 
