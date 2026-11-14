@@ -450,10 +450,20 @@ if (
   passed++;
 else failed++;
 
+function tempFilesystemFoldsCase() {
+  const directory = createTempDir('codex-case-probe-');
+  try {
+    fs.writeFileSync(path.join(directory, 'CaseProbe'), 'probe');
+    return fs.existsSync(path.join(directory, 'caseprobe'));
+  } finally {
+    cleanup(directory);
+  }
+}
+
 // A case-folded spelling, because macOS resolves `$venv/bin/python` to a committed
 // `Python` while git matches index pathspecs case-sensitively. Skipped where the
 // filesystem is case-sensitive and the two names cannot collide.
-if (fs.existsSync(__filename.toUpperCase()) || fs.existsSync(__filename.toLowerCase())) {
+if (tempFilesystemFoldsCase()) {
   if (
     test('pre-push refuses a tracked interpreter committed under a folded case', () => {
       const { result, calls } = runHermeticPythonPrePush({
@@ -468,6 +478,8 @@ if (fs.existsSync(__filename.toUpperCase()) || fs.existsSync(__filename.toLowerC
   )
     passed++;
   else failed++;
+} else {
+  console.log('  SKIP folded-case interpreter: temporary filesystem is case-sensitive');
 }
 
 if (

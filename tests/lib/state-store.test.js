@@ -312,6 +312,92 @@ async function runTests() {
   let passed = 0;
   let failed = 0;
 
+  if (await test('coordinates independent handles and processes without stale exports', async () => {
+    const dir = createTempDir('ecc-state-concurrent-');
+    const dbPath = path.join(dir, 'state.db');
+    const first = await createStateStore({ dbPath });
+    const second = await createStateStore({ dbPath });
+    try {
+      first._database.exec('CREATE TABLE concurrency_probe (id TEXT PRIMARY KEY)');
+      second._database.exec("INSERT INTO concurrency_probe VALUES ('second')");
+      const child = spawnSync(process.execPath, ['-e', `
+        const { createStateStore } = require(${JSON.stringify(path.join(__dirname, '../../scripts/lib/state-store'))});
+        (async () => {
+          const store = await createStateStore({dbPath: process.argv[1]});
+          store._database.exec("INSERT INTO concurrency_probe VALUES ('child')");
+          store.close();
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+      `, dbPath], { encoding: 'utf8' });
+      assert.strictEqual(child.status, 0, child.stderr);
+      first._database.exec("INSERT INTO concurrency_probe VALUES ('first')");
+      assert.deepStrictEqual(second._database.prepare('SELECT id FROM concurrency_probe ORDER BY id').all(), [
+        { id: 'child' }, { id: 'first' }, { id: 'second' }
+      ]);
+      // Closing the now-stale reader must never export its old snapshot.
+      first._database.exec("INSERT INTO concurrency_probe VALUES ('after-read')");
+    } finally {
+      second.close();
+      first.close();
+    }
+    const reopened = await createStateStore({ dbPath });
+    try {
+      assert.strictEqual(reopened._database.prepare('SELECT COUNT(*) AS n FROM concurrency_probe').get().n, 4);
+    } finally { reopened.close(); cleanupTempDir(dir); }
+  })) passed += 1; else failed += 1;
+
+  if (await test('fails closed on a held lock and releases locks after rollback', async () => {
+    const dir = createTempDir('ecc-state-lock-');
+    const dbPath = path.join(dir, 'state.db');
+    const store = await createStateStore({ dbPath });
+    try {
+      store._database.exec('CREATE TABLE lock_probe (id TEXT)');
+      fs.mkdirSync(`${dbPath}.lock`);
+      assert.throws(() => store._database.exec("INSERT INTO lock_probe VALUES ('lost')"), /locked/i);
+      fs.rmdirSync(`${dbPath}.lock`);
+      assert.throws(() => store._database.transaction(() => {
+        store._database.exec("INSERT INTO lock_probe VALUES ('rolled back')");
+        throw new Error('rollback probe');
+      })(), /rollback probe/);
+      store._database.transaction(() => {
+        const contender = spawnSync(process.execPath, ['-e', `
+          const { createStateStore } = require(${JSON.stringify(path.join(__dirname, '../../scripts/lib/state-store'))});
+          createStateStore({dbPath: process.argv[1]}).then(store => {
+            store.close(); process.exitCode = 2;
+          }, error => { if (error.code !== 'ECC_STATE_STORE_LOCKED') process.exitCode = 3; });
+        `, dbPath], { encoding: 'utf8' });
+        assert.strictEqual(contender.status, 0, contender.stderr);
+      })();
+      assert.strictEqual(fs.existsSync(`${dbPath}.lock`), false);
+      assert.strictEqual(store._database.prepare('SELECT COUNT(*) AS n FROM lock_probe').get().n, 0);
+    } finally { store.close(); cleanupTempDir(dir); }
+  })) passed += 1; else failed += 1;
+
+  if (await test('persists query mutations and rejects escaped transaction writes', async () => {
+    const dir = createTempDir('ecc-state-query-');
+    const dbPath = path.join(dir, 'state.db');
+    const store = await createStateStore({ dbPath });
+    try {
+      store._database.exec('CREATE TABLE query_probe (id TEXT)');
+      assert.deepStrictEqual(store._database.prepare("INSERT INTO query_probe VALUES ('get') RETURNING id").get(), { id: 'get' });
+      assert.deepStrictEqual(store._database.prepare("INSERT INTO query_probe VALUES ('all') RETURNING id").all(), [{ id: 'all' }]);
+      assert.throws(() => store._database.transaction(async () => {
+        await Promise.resolve();
+        store._database.exec("INSERT INTO query_probe VALUES ('escaped')");
+      })(), /synchronous/);
+      assert.throws(() => store._database.transaction(() => Promise.resolve().then(() => {
+        store._database.exec("INSERT INTO query_probe VALUES ('escaped-then')");
+      }))(), /synchronous/);
+      assert.throws(() => store._database.transaction(() => ({
+        then(resolve) {
+          store._database.exec("INSERT INTO query_probe VALUES ('escaped-thenable')");
+          resolve();
+        }
+      }))(), /synchronous/);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepStrictEqual(store._database.prepare('SELECT id FROM query_probe ORDER BY id').all(), [{ id: 'all' }, { id: 'get' }]);
+    } finally { store.close(); cleanupTempDir(dir); }
+  })) passed += 1; else failed += 1;
+
   if (await test('creates the default state.db path and applies migrations idempotently', async () => {
     const homeDir = createTempDir('ecc-state-home-');
 

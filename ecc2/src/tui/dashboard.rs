@@ -3173,7 +3173,7 @@ impl Dashboard {
                     self.set_operator_note("no inactive worktrees to prune".to_string());
                 } else if outcome.cleaned_session_ids.is_empty() {
                     self.set_operator_note(format!(
-                        "deferred {} inactive worktree(s) within retention",
+                        "deferred {} inactive worktree(s) for retention or safety",
                         outcome.retained_session_ids.len()
                     ));
                 } else if outcome.active_with_worktree_ids.is_empty() {
@@ -3184,7 +3184,7 @@ impl Dashboard {
                         ));
                     } else {
                         self.set_operator_note(format!(
-                            "pruned {} inactive worktree(s); deferred {} within retention",
+                            "pruned {} inactive worktree(s); deferred {} for retention or safety",
                             outcome.cleaned_session_ids.len(),
                             outcome.retained_session_ids.len()
                         ));
@@ -3197,7 +3197,7 @@ impl Dashboard {
                     );
                     if !outcome.retained_session_ids.is_empty() {
                         note.push_str(&format!(
-                            "; deferred {} within retention",
+                            "; deferred {} for retention or safety",
                             outcome.retained_session_ids.len()
                         ));
                     }
@@ -4516,9 +4516,7 @@ impl Dashboard {
         self.session_output_generations = active_session_generations;
 
         let batch = match self.output_cursor {
-            Some(cursor) => self
-                .db
-                .get_output_since(cursor, OUTPUT_DELTA_BATCH_LIMIT),
+            Some(cursor) => self.db.get_output_since(cursor, OUTPUT_DELTA_BATCH_LIMIT),
             None => self.db.get_output_snapshot(OUTPUT_BUFFER_LIMIT),
         };
         let batch = match batch {
@@ -6595,7 +6593,10 @@ impl Dashboard {
                     format!(" | {branch}")
                 }
             ));
-            lines.push(format!("Task {}", truncate_for_dashboard(&session.task, 48)));
+            lines.push(format!(
+                "Task {}",
+                truncate_for_dashboard(&session.task, 48)
+            ));
             if let Some(meta) = meta {
                 lines.push(format!(
                     "Progress {:>3}% {}",
@@ -6645,7 +6646,14 @@ impl Dashboard {
             }
         }
 
-        let lanes = ["Inbox", "In Progress", "Review", "Blocked", "Done", "Stopped"];
+        let lanes = [
+            "Inbox",
+            "In Progress",
+            "Review",
+            "Blocked",
+            "Done",
+            "Stopped",
+        ];
         for label in lanes {
             let mut lane_sessions = self
                 .sessions
@@ -6771,7 +6779,10 @@ impl Dashboard {
                     session.agent_type,
                     meta.progress_percent,
                     board_progress_bar(meta.progress_percent),
-                    truncate_for_dashboard(meta.status_detail.as_deref().unwrap_or(&session.task), 18),
+                    truncate_for_dashboard(
+                        meta.status_detail.as_deref().unwrap_or(&session.task),
+                        18
+                    ),
                     activity_suffix,
                     backlog_suffix,
                     branch_suffix
@@ -8645,10 +8656,9 @@ fn board_codename(session: &Session) -> String {
         "Fox", "Kite", "Lynx", "Otter", "Rook", "Sprite", "Wisp", "Wolf",
     ];
 
-    let seed = session
-        .id
-        .bytes()
-        .fold(0usize, |acc, byte| acc.wrapping_mul(33).wrapping_add(byte as usize));
+    let seed = session.id.bytes().fold(0usize, |acc, byte| {
+        acc.wrapping_mul(33).wrapping_add(byte as usize)
+    });
     format!(
         "{} {}",
         ADJECTIVES[seed % ADJECTIVES.len()],
@@ -14196,7 +14206,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[tokio::test]
-    async fn prune_inactive_worktrees_reports_pruned_and_skipped_counts() -> Result<()> {
+    async fn prune_inactive_worktrees_preserves_unverifiable_paths() -> Result<()> {
         let db_path = std::env::temp_dir().join(format!("ecc2-dashboard-{}.db", Uuid::new_v4()));
         let db = StateStore::open(&db_path)?;
         let now = Utc::now();
@@ -14245,18 +14255,24 @@ diff --git a/src/lib.rs b/src/lib.rs
         })?;
 
         let dashboard_store = StateStore::open(&db_path)?;
-        let mut dashboard = Dashboard::new(dashboard_store, Config::default());
+        let mut dashboard = Dashboard::new(
+            dashboard_store,
+            Config {
+                worktree_retention_secs: 0,
+                ..Config::default()
+            },
+        );
         dashboard.prune_inactive_worktrees().await;
 
         assert_eq!(
             dashboard.operator_note.as_deref(),
-            Some("pruned 1 inactive worktree(s); skipped 1 active session(s)")
+            Some("deferred 1 inactive worktree(s) for retention or safety")
         );
         assert!(db
             .get_session("stopped-1")?
             .expect("stopped session should exist")
             .worktree
-            .is_none());
+            .is_some());
         assert!(db
             .get_session("running-1")?
             .expect("running session should exist")
@@ -14307,7 +14323,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         assert_eq!(
             dashboard.operator_note.as_deref(),
-            Some("deferred 1 inactive worktree(s) within retention")
+            Some("deferred 1 inactive worktree(s) for retention or safety")
         );
         assert!(db
             .get_session("stopped-1")?
@@ -15320,6 +15336,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             auto_dispatch_limit_per_session: 5,
             auto_create_worktrees: true,
             auto_merge_ready_worktrees: false,
+            auto_prune_inactive_worktrees: false,
             desktop_notifications: crate::notifications::DesktopNotificationConfig::default(),
             webhook_notifications: crate::notifications::WebhookNotificationConfig::default(),
             completion_summary_notifications:
@@ -15339,7 +15356,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     fn init_git_repo(path: &Path) -> Result<()> {
         fs::create_dir_all(path)?;
-        run_git(path, &["init", "-q"])?;
+        run_git(path, &["init", "-q", "-b", "main"])?;
         run_git(path, &["config", "user.name", "ECC Tests"])?;
         run_git(path, &["config", "user.email", "ecc-tests@example.com"])?;
         // Keep fixtures hermetic: a global core.hooksPath (e.g. identity-checking

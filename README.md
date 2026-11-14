@@ -1,6 +1,22 @@
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:588d90e9903e763dc67c07f8e8135d1bb567d1431fb224d8bfe3e0d0ba473f1b -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:a2ce719cf0ededeb533af8b0c9311afee044406695c133354a0e0ce1a60bd04a -->
+
+> **Harness-ecc fork — 2.2.4 candidate:** stability and data-integrity fixes are described in the [release notes](docs/releases/2.2.4/release-notes.md). Publication remains subject to signed-tag and exact-commit CI gates. Upstream ECC names and MIT attribution are retained; this fork release does not publish `ecc-universal` to npm.
+>
+> **Install this fork from source:** obtain the reviewed commit or published tag from [Harness-ecc](https://github.com/hegonhernandez-pixel/Harness-ecc), run `npm ci --ignore-scripts`, then `node scripts/install-apply.js --profile minimal --target claude` for a minimal install without hooks. The package-runner examples below document the inherited package interface at the candidate version; they are not a published installation channel for this fork and do not establish availability on npm.
+
+<!-- /coderabbit-ai-generated:v1 -->
+
 <p align="center">
   <img src="assets/hero.png" alt="ECC - the agent harness operating system" width="100%" />
 </p>
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 <p align="center">
   <a href="https://www.star-history.com/affaan-m/ecc">
@@ -159,6 +175,10 @@ Access to 68 agents, 293 skills, and 94 legacy command shims, plus hooks, rules,
   </a>
 </p>
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4271f5493cc5150578affb56f48fcd5a2ecbf5eceeb1682a3cb8de994229ba51 -->
+
 ## Install ECC
 
 > [!IMPORTANT]
@@ -171,7 +191,7 @@ Access to 68 agents, 293 skills, and 94 legacy command shims, plus hooks, rules,
 For Claude Code plugin setup, updates, scope changes, and hook-profile changes:
 
 ```bash
-npx ecc-universal@2.2.3 setup
+npx ecc-universal@2.2.4 setup
 ```
 
 #### Windows first-time walkthrough
@@ -191,7 +211,7 @@ If you are new to command-line tools, use this copy-and-paste path:
 4. Run the guided installer:
 
    ```powershell
-   npx ecc-universal@2.2.3 setup
+   npx ecc-universal@2.2.4 setup
    ```
 
 5. For a typical personal setup, choose **Global user**, choose **Standard** hooks, and confirm.
@@ -209,12 +229,18 @@ ECC 2.2 supports the same guided setup through modern package runners:
 
 | Package runner | Guided setup command |
 |---|---|
-| npm / npx | `npx ecc-universal@2.2.3 setup` |
-| pnpm | `pnpm dlx ecc-universal@2.2.3 setup` |
-| Yarn 2+ | `yarn dlx ecc-universal@2.2.3 setup` |
-| Bun | `bunx ecc-universal@2.2.3 setup` |
+| npm / npx | `npx ecc-universal@2.2.4 setup` |
+| pnpm | `pnpm dlx ecc-universal@2.2.4 setup` |
+| Yarn 2+ | `yarn dlx ecc-universal@2.2.4 setup` |
+| Bun | `bunx ecc-universal@2.2.4 setup` |
 
-The examples select [the published ECC 2.2.3 release](https://www.npmjs.com/package/ecc-universal/v/2.2.3), matching this repository's release version. A version pin is not a security audit or an integrity check. Review the release source and registry integrity before running package code; use a reviewed checkout for unreleased changes.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:2ff18e17acd02235867295a245cdd0cb8ff44b44b393a8d9cec816aceee704d8 -->
+
+The examples pin the candidate version 2.2.4, matching this repository's release version. The [npm version reference](https://www.npmjs.com/package/ecc-universal/v/2.2.4) is an upstream registry reference, not evidence that this fork is published there. A version pin is not a security audit or an integrity check. Review the release source and registry integrity before running package code; use a reviewed checkout for unreleased changes.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 Yarn Classic 1 does not provide `yarn dlx`; use `npx`, install the package globally, or upgrade Yarn for a temporary one-shot run.
 
@@ -223,7 +249,7 @@ The wizard inventories the official marketplace and every native Claude install 
 To configure more than one coding agent in one reviewed flow, use the multi-harness wizard:
 
 ```bash
-npx ecc-universal@2.2.3 install --guided
+npx ecc-universal@2.2.4 install --guided
 ```
 
 It lets you select any combination of Claude Code, Codex, and Kimi Code, shows each install channel and destination, preflights every selection before the first write, and asks for one final confirmation.
@@ -237,7 +263,7 @@ It lets you select any combination of Claude Code, Codex, and Kimi Code, shows e
 For automation, make every provider-specific choice explicit:
 
 ```bash
-npx ecc-universal@2.2.3 install --guided \
+npx ecc-universal@2.2.4 install --guided \
   --harness claude --harness codex --harness kimi \
   --claude-scope local --claude-hooks standard \
   --profile core --yes
@@ -246,16 +272,16 @@ npx ecc-universal@2.2.3 install --guided \
 Verify the native guided Codex path and managed Kimi path without writing first:
 
 ```bash
-npx ecc-universal@2.2.3 install --guided --harness codex --dry-run
-npx ecc-universal@2.2.3 install --profile core --target kimi --dry-run
+npx ecc-universal@2.2.4 install --guided --harness codex --dry-run
+npx ecc-universal@2.2.4 install --profile core --target kimi --dry-run
 ```
 
 Additional package-name commands are also available through the 2.2 alias:
 
 ```bash
-npx ecc-universal@2.2.3 consult "security reviews" --target claude
-npx ecc-universal@2.2.3 install --profile minimal --target claude --with capability:machine-learning
-npx ecc-universal@2.2.3 doctor --target kimi
+npx ecc-universal@2.2.4 consult "security reviews" --target claude
+npx ecc-universal@2.2.4 install --profile minimal --target claude --with capability:machine-learning
+npx ecc-universal@2.2.4 doctor --target kimi
 ```
 
 Do not use `npx ecc-install --profile minimal --target claude`: `ecc-install` is a binary name inside `ecc-universal`, not a separately published npm package.
@@ -417,6 +443,12 @@ Cursor installs agent definitions under `.cursor/agents/ecc-*.md`. Cursor-native
 Deep per-harness notes (feature parity, hook adapters, limitations) live in [Platform Support](#platform-support) below.
 </details>
 
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:2bd74f505f11c66711ce278b25cdc830f3303c35d2d73e7a6717d8f1a2174a55 -->
+
 ## Advanced Install Options
 
 <details>
@@ -427,7 +459,7 @@ Deep per-harness notes (feature parity, hook adapters, limitations) live in [Pla
 Use this when you want ECC's rules, agents, commands, platform config, and core workflows without runtime hooks:
 
 ```bash
-npx ecc-universal@2.2.3 install --profile minimal --target claude
+npx ecc-universal@2.2.4 install --profile minimal --target claude
 ```
 
 From a source checkout, the equivalent command is:
@@ -615,11 +647,11 @@ If you installed from the universal package, run these commands from the same
 project directory used for installation:
 
 ```bash
-npx ecc-universal@2.2.3 list-installed
-npx ecc-universal@2.2.3 doctor
-npx ecc-universal@2.2.3 repair
-npx ecc-universal@2.2.3 uninstall --dry-run
-npx ecc-universal@2.2.3 uninstall
+npx ecc-universal@2.2.4 list-installed
+npx ecc-universal@2.2.4 doctor
+npx ecc-universal@2.2.4 repair
+npx ecc-universal@2.2.4 uninstall --dry-run
+npx ecc-universal@2.2.4 uninstall
 ```
 
 From a source checkout, inspect the managed state before reinstalling:
@@ -649,6 +681,8 @@ If you stacked methods, clean up in this order:
 3. Delete any extra rule folders you copied manually and no longer want.
 4. Reinstall once, using a single path.
 </details>
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Start Using ECC
 
@@ -808,7 +842,13 @@ The `ito-compute-cli` package is currently unpublished. Build it locally from th
 
 ## What's New
 
-Current release: **2.2.3** (2026-10-01). Highlights of the 2.2 line:
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:6fb825ff1f3b772c969d03cc738db18d3d1fbfe6677d17f8604542c500f0fefd -->
+
+Harness-ecc candidate: **2.2.4** (2026-11-14), pending publication gates. See the [stability release notes](docs/releases/2.2.4/release-notes.md). Highlights inherited from the 2.2 line:
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 - Guided, manifest-driven setup across Claude Code, Codex, and Kimi Code, with install-state ownership, doctor, repair, and uninstall.
 - Native Antigravity install, a thin Pi adapter, and the packed-artifact release gate tested on Linux, macOS, and Windows.
@@ -1180,6 +1220,10 @@ This repo is the raw code. The guides explain everything.
 
 [Commands Quick Reference](./COMMANDS-QUICK-REF.md) | [Manual Adaptation Guide](docs/MANUAL-ADAPTATION-GUIDE.md) | [Troubleshooting FAQ](./TROUBLESHOOTING.md) | [Roadmap](docs/ROADMAP.md)
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:d2780645a8e014c0b1335ae1fa6d0f07b55723bb48be0c4ab09d9a5c7c14a556 -->
+
 ## Why Choose ECC?
 
 | Without a system                                        | With ECC                                                              |
@@ -1225,7 +1269,7 @@ ECC's Memory Vault gives Claude, Codex, Hermes, OpenClaw, Kimi, and other harnes
 Skill-only, minimal, manual, and Claude plugin installs do not put the Memory Vault runtime on `PATH`. Install the npm runtime separately before using the CLI or optional MCP server:
 
 ```bash
-npm install -g ecc-universal@2.2.3
+npm install -g ecc-universal@2.2.4
 ecc memory init --scope project
 ecc memory search "authentication migration" --target-harness codex
 ecc memory doctor
@@ -1270,6 +1314,12 @@ Memory bodies are accepted only through `--stdin` or `--body-file`, not as comma
 
 For opt-in MCP access, add the `ecc-memory-vault` entry from [`mcp-configs/mcp-servers.json`](mcp-configs/mcp-servers.json) to each harness that needs it, then run `ecc-memory-mcp`. The server exposes only `memory_save`, `memory_search`, `memory_read`, and `memory_doctor`. Each server must launch with a lowercase `ECC_MEMORY_HARNESS` identity; the identity is server-bound and cannot be supplied by a tool caller. User scope additionally requires the operator-controlled `ECC_MEMORY_ALLOW_USER_SCOPE=1` opt-in. See [`skills/unified-memory/SKILL.md`](skills/unified-memory/SKILL.md) for the workflow and trust boundaries, and [`docs/design/ecc-memory-vault.md`](docs/design/ecc-memory-vault.md) for the capability contract.
 </details>
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:3fbf9a8927fabf715f59e14b0630b6cdf10e63998208829b56dbc96d3daa73b4 -->
 
 ## Platform Support
 
@@ -1625,7 +1675,7 @@ opencode
 
 **Option 2: Install as npm package**
 ```bash
-npm install ecc-universal@2.2.3
+npm install ecc-universal@2.2.4
 ```
 
 Then add to your `opencode.json`:
@@ -1704,6 +1754,8 @@ ECC v2.0.0 stabilizes the 2.0 line with the public Hermes operator story, 281 sk
 - [Migration guide from 1.x](docs/MIGRATION-1X-TO-2.0.md)
 </details>
 </details>
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Token Optimization
 

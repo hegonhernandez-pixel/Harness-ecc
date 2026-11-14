@@ -23,20 +23,26 @@ pub async fn run(db: StateStore, cfg: Config) -> Result<()> {
 
     let heartbeat_interval = Duration::from_secs(cfg.heartbeat_interval_secs);
     loop {
-        if let Err(e) = check_sessions(&db, &cfg) {
-            tracing::error!("Session check failed: {e}");
-        }
+        let can_dispatch = match check_sessions(&db, &cfg) {
+            Ok(can_dispatch) => can_dispatch,
+            Err(error) => {
+                tracing::error!("Session check failed; dispatch suspended: {error}");
+                false
+            }
+        };
 
-        if let Err(e) = maybe_run_due_schedules(&db, &cfg).await {
-            tracing::error!("Scheduled task dispatch pass failed: {e}");
-        }
+        if can_dispatch {
+            if let Err(e) = maybe_run_due_schedules(&db, &cfg).await {
+                tracing::error!("Scheduled task dispatch pass failed: {e}");
+            }
 
-        if let Err(e) = maybe_run_remote_dispatch(&db, &cfg).await {
-            tracing::error!("Remote dispatch pass failed: {e}");
-        }
+            if let Err(e) = maybe_run_remote_dispatch(&db, &cfg).await {
+                tracing::error!("Remote dispatch pass failed: {e}");
+            }
 
-        if let Err(e) = coordinate_backlog_cycle(&db, &cfg).await {
-            tracing::error!("Backlog coordination pass failed: {e}");
+            if let Err(e) = coordinate_backlog_cycle(&db, &cfg).await {
+                tracing::error!("Backlog coordination pass failed: {e}");
+            }
         }
 
         if let Err(e) = maybe_auto_merge_ready_worktrees(&db, &cfg).await {
@@ -47,8 +53,10 @@ pub async fn run(db: StateStore, cfg: Config) -> Result<()> {
             tracing::error!("Worktree auto-prune pass failed: {e}");
         }
 
-        if let Err(e) = manager::activate_pending_worktree_sessions(&db, &cfg).await {
-            tracing::error!("Queued worktree activation pass failed: {e}");
+        if can_dispatch {
+            if let Err(e) = manager::activate_pending_worktree_sessions(&db, &cfg).await {
+                tracing::error!("Queued worktree activation pass failed: {e}");
+            }
         }
 
         time::sleep(heartbeat_interval).await;
@@ -92,9 +100,14 @@ where
     Ok(failed_sessions)
 }
 
-fn check_sessions(db: &StateStore, cfg: &Config) -> Result<()> {
+fn check_sessions(db: &StateStore, cfg: &Config) -> Result<bool> {
+    db.refresh_session_durations()?;
+    db.sync_cost_tracker_metrics(&cfg.cost_metrics_path())?;
+    db.sync_tool_activity_metrics(&cfg.tool_activity_metrics_path())?;
     let _ = manager::enforce_session_heartbeats(db, cfg)?;
-    Ok(())
+    let budget = manager::enforce_budget_hard_limits(db, cfg)?;
+    let _ = manager::enforce_conflict_resolution(db, cfg)?;
+    Ok(!budget.token_budget_exceeded && !budget.cost_budget_exceeded)
 }
 
 async fn maybe_run_due_schedules(db: &StateStore, cfg: &Config) -> Result<usize> {
@@ -429,6 +442,9 @@ where
 }
 
 async fn maybe_auto_prune_inactive_worktrees(db: &StateStore, cfg: &Config) -> Result<usize> {
+    if !cfg.auto_prune_inactive_worktrees {
+        return Ok(0);
+    }
     maybe_auto_prune_inactive_worktrees_with_recorder(
         || manager::prune_inactive_worktrees(db, cfg),
         |pruned, active| db.record_daemon_auto_prune_pass(pruned, active),
@@ -466,7 +482,7 @@ where
         tracing::info!("Skipped {active} active worktree(s) during auto-prune");
     }
     if retained > 0 {
-        tracing::info!("Deferred {retained} inactive worktree(s) within retention");
+        tracing::info!("Deferred {retained} inactive worktree(s) for retention or safety");
     }
 
     Ok(pruned)
@@ -474,7 +490,7 @@ where
 
 #[cfg(unix)]
 fn pid_is_alive(pid: u32) -> bool {
-    if pid == 0 {
+    if pid == 0 || pid > i32::MAX as u32 {
         return false;
     }
 
@@ -490,9 +506,35 @@ fn pid_is_alive(pid: u32) -> bool {
     )
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+    if pid == 0 {
+        return false;
+    }
+    // Query a process handle, avoiding localized command output and CSV parsing.
+    // Access denied or a failed probe preserves the session rather than inventing a crash.
+    unsafe {
+        let handle = OpenProcess(0x0010_0000, 0, pid); // SYNCHRONIZE
+        if handle.is_null() {
+            return GetLastError() != 87;
+        } // ERROR_INVALID_PARAMETER
+        let result = WaitForSingleObject(handle, 0);
+        CloseHandle(handle);
+        result != 0 // WAIT_OBJECT_0 means the process has exited.
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn pid_is_alive(_pid: u32) -> bool {
-    false
+    true // Unknown platform: preserve running sessions until an explicit stop.
 }
 
 #[cfg(test)]
@@ -527,6 +569,49 @@ mod tests {
             last_heartbeat_at: now,
             metrics: SessionMetrics::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn automatic_pruning_is_disabled_by_default() -> Result<()> {
+        let path = temp_db_path();
+        let store = StateStore::open(&path)?;
+        let cfg = Config::default();
+        assert!(!cfg.auto_prune_inactive_worktrees);
+        // A disabled pass does not even record a cleanup attempt.
+        assert_eq!(maybe_auto_prune_inactive_worktrees(&store, &cfg).await?, 0);
+        assert_eq!(store.daemon_activity()?.last_auto_prune_at, None);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn pid_probe_detects_current_process() {
+        assert!(pid_is_alive(std::process::id()));
+        assert!(!pid_is_alive(0));
+    }
+
+    #[test]
+    fn check_sessions_enforces_budget_without_dashboard() -> Result<()> {
+        let path = temp_db_path();
+        let store = StateStore::open(&path)?;
+        let mut session = sample_session("expensive", SessionState::Running, None);
+        session.metrics.tokens_used = 200;
+        store.insert_session(&session)?;
+        store.update_metrics(&session.id, &session.metrics)?;
+        let cfg = Config {
+            token_budget: 100,
+            ..Config::default()
+        };
+        assert!(!check_sessions(&store, &cfg)?);
+        assert_eq!(
+            store.get_session("expensive")?.unwrap().state,
+            SessionState::Stopped
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+        Ok(())
     }
 
     #[test]

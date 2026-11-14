@@ -11,8 +11,10 @@
 
 const path = require('path');
 const fs = require('fs');
-const { getSessionsDir, getDateString, getTimeString, getSessionIdShort, sanitizeSessionId, getProjectName, getRepoIdentity, ensureDir, readFile, writeFile, runCommand, stripAnsi, log } = require('../lib/utils');
+const { getSessionsDir, getDateString, getTimeString, getSessionIdShort, sanitizeSessionId, getProjectName, getRepoIdentity, readFile, runCommand, stripAnsi, log } = require('../lib/utils');
 const { generateSessionSummary, getContextRemainingPct, getContextThreshold } = require('../lib/llm-summary');
+
+const { readTranscriptTail, redactSessionSecrets, writePrivateSessionFile } = require('../lib/session-privacy');
 
 const SUMMARY_START_MARKER = '<!-- ECC:SUMMARY:START -->';
 const SUMMARY_END_MARKER = '<!-- ECC:SUMMARY:END -->';
@@ -26,7 +28,8 @@ const SESSION_SEPARATOR = '\n---\n';
  * - Files modified
  */
 function extractSessionSummary(transcriptPath) {
-  const content = readFile(transcriptPath);
+  const transcript = readTranscriptTail(transcriptPath);
+  const content = transcript?.text;
   if (!content) return null;
 
   const lines = content.split('\n').filter(Boolean);
@@ -46,7 +49,7 @@ function extractSessionSummary(transcriptPath) {
         // Skip tool_result carrier turns — they are not user asks.
         const isToolResult = Array.isArray(rawContent) && rawContent.some(c => c && c.type === 'tool_result');
         const text = typeof rawContent === 'string' ? rawContent : Array.isArray(rawContent) ? rawContent.map(c => (c && c.text) || '').join(' ') : '';
-        const cleaned = stripAnsi(text).trim();
+        const cleaned = redactSessionSecrets(stripAnsi(text)).trim();
         // Skip harness noise: local command echoes, caveats, system reminders.
         const isNoise = /^<(local-command-caveat|local-command-stdout|command-name|command-message|command-args|system-reminder|task-notification)/i.test(cleaned);
         // `isMeta` is also used for genuine channel- and plugin-originated
@@ -97,6 +100,7 @@ function extractSessionSummary(transcriptPath) {
     userMessages: userMessages.slice(-10), // Last 10 user messages
     toolsUsed: Array.from(toolsUsed).slice(0, 20),
     filesModified: Array.from(filesModified).slice(0, 30),
+    transcriptTruncated: transcript.truncated,
     totalMessages: userMessages.length
   };
 }
@@ -242,8 +246,6 @@ async function main() {
   const sessionFile = path.join(sessionsDir, `${today}-${shortId}-session.tmp`);
   const sessionMetadata = getSessionMetadata();
 
-  ensureDir(sessionsDir);
-
   const currentTime = getTimeString();
 
   // Decide whether to call LLM for a richer summary.
@@ -258,6 +260,7 @@ async function main() {
     if (isContextLow || isPeriodicTurn) {
       log(`[SessionEnd] LLM summary triggered (context: ${contextPct ?? 'unknown'}%, messages: ${summary.totalMessages})`);
       llmSummary = generateSessionSummary(transcriptPath);
+      if (llmSummary) llmSummary = redactSessionSecrets(llmSummary);
       if (llmSummary) {
         log('[SessionEnd] LLM summary generated successfully');
       } else {
@@ -294,14 +297,14 @@ async function main() {
       } else {
         // Migration path for files created before summary markers existed.
         updatedContent = updatedContent.replace(
-          /## (?:Session Summary|Current State)[\s\S]*?$/,
-          () => `${summaryBlock}\n\n### Notes for Next Session\n-\n\n### Context to Load\n\`\`\`\n[relevant files]\n\`\`\`\n`
+          /## (?:Session Summary|Current State)[\s\S]*?(?=\n### (?:Notes for Next Session|Context to Load)\b|$)/,
+          () => `${summaryBlock}\n`
         );
       }
     }
 
     if (updatedContent) {
-      writeFile(sessionFile, updatedContent);
+      writePrivateSessionFile(sessionFile, updatedContent);
     }
 
     log(`[SessionEnd] Updated session file: ${sessionFile}`);
@@ -315,7 +318,7 @@ async function main() {
     const template = `${buildSessionHeader(today, currentTime, sessionMetadata)}${SESSION_SEPARATOR}${summarySection}
 `;
 
-    writeFile(sessionFile, template);
+    writePrivateSessionFile(sessionFile, template);
     log(`[SessionEnd] Created session file: ${sessionFile}`);
   }
 
@@ -346,13 +349,13 @@ function buildSummarySection(summary) {
     section += `### Tools Used\n${summary.toolsUsed.join(', ')}\n\n`;
   }
 
-  section += `### Stats\n- Total user messages: ${summary.totalMessages}\n`;
+  section += `### Stats\n- ${summary.transcriptTruncated ? 'User messages in last 4 MiB (older context omitted)' : 'Total user messages'}: ${summary.totalMessages}\n`;
 
   return section;
 }
 
 function buildSummaryBlock(summary) {
-  return `${SUMMARY_START_MARKER}\n${buildSummarySection(summary).trim()}\n${SUMMARY_END_MARKER}`;
+  return `${SUMMARY_START_MARKER}\n${redactSessionSecrets(buildSummarySection(summary).trim())}\n${SUMMARY_END_MARKER}`;
 }
 
 function escapeRegExp(value) {

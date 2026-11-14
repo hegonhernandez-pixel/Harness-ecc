@@ -4886,7 +4886,7 @@ fn format_prune_worktrees_human(outcome: &session::manager::WorktreePruneOutcome
         lines.push("No inactive worktrees are being retained".to_string());
     } else {
         lines.push(format!(
-            "Deferred {} inactive worktree(s) still within retention",
+            "Deferred {} inactive worktree(s) for retention or safety",
             outcome.retained_session_ids.len()
         ));
         for session_id in &outcome.retained_session_ids {
@@ -9652,7 +9652,7 @@ mod tests {
         assert!(text.contains("- cleaned deadbeef"));
         assert!(text.contains("Skipped 1 active session(s) still holding worktrees"));
         assert!(text.contains("- active facefeed"));
-        assert!(text.contains("Deferred 1 inactive worktree(s) still within retention"));
+        assert!(text.contains("Deferred 1 inactive worktree(s) for retention or safety"));
         assert!(text.contains("- retained retain12"));
     }
 

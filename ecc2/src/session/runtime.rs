@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, MissedTickBehavior};
@@ -14,12 +14,13 @@ use super::SessionState;
 type DbAck = std::result::Result<(), String>;
 
 enum DbMessage {
-    UpdateState {
+    FinishProcess {
+        pid: Option<u32>,
         state: SessionState,
         ack: oneshot::Sender<DbAck>,
     },
-    UpdatePid {
-        pid: Option<u32>,
+    StartProcess {
+        pid: u32,
         ack: oneshot::Sender<DbAck>,
     },
     AppendOutputLine {
@@ -44,12 +45,13 @@ impl DbWriter {
         Self { tx }
     }
 
-    async fn update_state(&self, state: SessionState) -> Result<()> {
-        self.send(|ack| DbMessage::UpdateState { state, ack }).await
+    async fn finish_process(&self, pid: Option<u32>, state: SessionState) -> Result<()> {
+        self.send(|ack| DbMessage::FinishProcess { pid, state, ack })
+            .await
     }
 
-    async fn update_pid(&self, pid: Option<u32>) -> Result<()> {
-        self.send(|ack| DbMessage::UpdatePid { pid, ack }).await
+    async fn start_process(&self, pid: u32) -> Result<()> {
+        self.send(|ack| DbMessage::StartProcess { pid, ack }).await
     }
 
     async fn append_output_line(&self, stream: OutputStream, line: String) -> Result<()> {
@@ -86,25 +88,21 @@ fn run_db_writer(db_path: PathBuf, session_id: String, mut rx: mpsc::UnboundedRe
 
     while let Some(message) = rx.blocking_recv() {
         match message {
-            DbMessage::UpdateState { state, ack } => {
+            DbMessage::FinishProcess { pid, state, ack } => {
                 let result = match opened.as_ref() {
                     Some(db) => db
-                        .update_state(&session_id, &state)
+                        .finish_process(&session_id, pid, &state)
                         .map_err(|error| error.to_string()),
-                    None => Err(open_error
-                        .clone()
-                        .unwrap_or_else(|| "Failed to open state store".to_string())),
+                    None => Err(open_error.clone().unwrap_or_default()),
                 };
                 let _ = ack.send(result);
             }
-            DbMessage::UpdatePid { pid, ack } => {
+            DbMessage::StartProcess { pid, ack } => {
                 let result = match opened.as_ref() {
                     Some(db) => db
-                        .update_pid(&session_id, pid)
+                        .start_process(&session_id, pid)
                         .map_err(|error| error.to_string()),
-                    None => Err(open_error
-                        .clone()
-                        .unwrap_or_else(|| "Failed to open state store".to_string())),
+                    None => Err(open_error.clone().unwrap_or_default()),
                 };
                 let _ = ack.send(result);
             }
@@ -143,6 +141,10 @@ pub async fn capture_command_output(
 ) -> Result<ExitStatus> {
     let db_writer = DbWriter::start(db_path, session_id.clone());
 
+    let mut run_pid = None;
+    #[cfg(unix)]
+    command.process_group(0);
+    command.kill_on_drop(true);
     let result = async {
         let mut child = command
             .stdout(Stdio::piped())
@@ -170,8 +172,16 @@ pub async fn capture_command_output(
         let pid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("Spawned process did not expose a process id"))?;
-        db_writer.update_pid(Some(pid)).await?;
-        db_writer.update_state(SessionState::Running).await?;
+        run_pid = Some(pid);
+        if let Err(error) = db_writer.start_process(pid).await {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error);
+        }
         db_writer.touch_heartbeat().await?;
 
         let heartbeat_writer = db_writer.clone();
@@ -212,16 +222,16 @@ pub async fn capture_command_output(
         } else {
             SessionState::Failed
         };
-        db_writer.update_pid(None).await?;
-        db_writer.update_state(final_state).await?;
+        db_writer.finish_process(Some(pid), final_state).await?;
 
         Ok(status)
     }
     .await;
 
     if result.is_err() {
-        let _ = db_writer.update_pid(None).await;
-        let _ = db_writer.update_state(SessionState::Failed).await;
+        let _ = db_writer
+            .finish_process(run_pid, SessionState::Failed)
+            .await;
     }
 
     result
@@ -237,9 +247,38 @@ async fn capture_stream<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let mut lines = BufReader::new(reader).lines();
-
-    while let Some(line) = lines.next_line().await? {
+    let mut reader = BufReader::new(reader);
+    let mut pending = Vec::new();
+    loop {
+        // take() bounds allocation even for an endless stream with no newline.
+        let mut bytes = std::mem::take(&mut pending);
+        let remaining = super::output::OUTPUT_LINE_BYTE_LIMIT - bytes.len();
+        let count = (&mut reader)
+            .take(remaining as u64)
+            .read_until(b'\n', &mut bytes)
+            .await?;
+        if count == 0 && bytes.is_empty() {
+            break;
+        }
+        // Retain an incomplete UTF-8 character across bounded reads. At EOF,
+        // malformed trailing bytes are rendered with the usual replacement character.
+        if count > 0 {
+            if let Err(error) = std::str::from_utf8(&bytes) {
+                if error.error_len().is_none() {
+                    pending = bytes.split_off(error.valid_up_to());
+                }
+            }
+            if bytes.is_empty() {
+                continue;
+            }
+        }
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+        }
+        let line = super::output::bounded_output_line(String::from_utf8_lossy(&bytes).into_owned());
         db_writer.append_output_line(stream, line.clone()).await?;
         output_store.push_line(&session_id, stream, line);
     }
@@ -261,6 +300,113 @@ mod tests {
     use crate::session::output::{SessionOutputStore, OUTPUT_BUFFER_LIMIT};
     use crate::session::store::StateStore;
     use crate::session::{Session, SessionMetrics, SessionState};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn capture_exit_preserves_concurrent_stop_and_owns_process_group() -> Result<()> {
+        let db_path = env::temp_dir().join(format!("ecc2-stop-race-{}.db", Uuid::new_v4()));
+        let db = StateStore::open(&db_path)?;
+        let now = Utc::now();
+        db.insert_session(&Session {
+            id: "stop-race".into(),
+            task: "test".into(),
+            project: "test".into(),
+            task_group: "general".into(),
+            agent_type: "test".into(),
+            working_dir: env::temp_dir(),
+            state: SessionState::Pending,
+            pid: None,
+            worktree: None,
+            created_at: now,
+            updated_at: now,
+            last_heartbeat_at: now,
+            metrics: SessionMetrics::default(),
+        })?;
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let task = tokio::spawn(capture_command_output(
+            db_path.clone(),
+            "stop-race".into(),
+            command,
+            SessionOutputStore::default(),
+            std::time::Duration::from_millis(10),
+        ));
+        let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(pid) = db.get_session("stop-race").unwrap().unwrap().pid {
+                    break pid;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await?;
+        assert_eq!(unsafe { libc::getpgid(pid as i32) }, pid as i32);
+        db.update_state("stop-race", &SessionState::Stopped)?;
+        assert_eq!(unsafe { libc::kill(-(pid as i32), libc::SIGTERM) }, 0);
+        tokio::time::timeout(std::time::Duration::from_secs(5), task).await???;
+        let session = db.get_session("stop-race")?.unwrap();
+        assert_eq!(session.state, SessionState::Stopped);
+        assert_eq!(session.pid, None);
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capture_stream_bounds_unterminated_and_invalid_utf8_output() -> Result<()> {
+        let db_path = env::temp_dir().join(format!("ecc2-bounded-output-{}.db", Uuid::new_v4()));
+        let db = StateStore::open(&db_path)?;
+        let now = Utc::now();
+        db.insert_session(&Session {
+            id: "bounded".into(),
+            task: "test".into(),
+            project: "test".into(),
+            task_group: "general".into(),
+            agent_type: "test".into(),
+            working_dir: env::temp_dir(),
+            state: SessionState::Running,
+            pid: None,
+            worktree: None,
+            created_at: now,
+            updated_at: now,
+            last_heartbeat_at: now,
+            metrics: SessionMetrics::default(),
+        })?;
+        let store = SessionOutputStore::default();
+        let limit = super::super::output::OUTPUT_LINE_BYTE_LIMIT;
+        let input = vec![0xff; limit * 3 + 11];
+        super::capture_stream(
+            "bounded".into(),
+            input.as_slice(),
+            super::OutputStream::Stdout,
+            store,
+            super::DbWriter::start(db_path.clone(), "bounded".into()),
+        )
+        .await?;
+        let lines = db.get_output_lines("bounded", 10)?;
+        assert_eq!(lines.len(), 4);
+        assert!(lines.iter().all(|line| line.text.len() <= limit));
+        let valid = format!("{}€\n", "a".repeat(limit - 1));
+        super::capture_stream(
+            "bounded".into(),
+            valid.as_bytes(),
+            super::OutputStream::Stdout,
+            SessionOutputStore::default(),
+            super::DbWriter::start(db_path.clone(), "bounded".into()),
+        )
+        .await?;
+        let lines = db.get_output_lines("bounded", 2)?;
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<String>(),
+            valid.trim_end()
+        );
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn capture_command_output_persists_lines_and_events() -> Result<()> {

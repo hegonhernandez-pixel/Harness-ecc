@@ -2,7 +2,19 @@
 
 这是一个**生产就绪的 AI 编码插件**，提供 68 个专业代理、293 项技能、94 条命令以及自动化钩子工作流，用于软件开发。
 
-**版本:** 2.2.3
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:08b265d51959ba75f5f6123cf46ac556452650f71f4f6e00f5a6fd76d80ddea8 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:7c2e0069eac0a78cd4e4579fc3c5e222bf4400e68633a9c73f83dac3b199f3d8 -->
+
+**版本:** 2.2.4
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## 核心原则
 

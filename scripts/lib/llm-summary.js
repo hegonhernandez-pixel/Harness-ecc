@@ -13,7 +13,7 @@
 'use strict';
 
 const { spawnSync } = require('child_process');
-const fs = require('fs');
+const { readTranscriptTail, redactSessionSecrets } = require('./session-privacy');
 
 const MAX_TRANSCRIPT_CHARS = 7000;
 const MAX_TURNS = 25;
@@ -35,7 +35,8 @@ function getContextThreshold() {
 function extractConversationText(transcriptPath) {
   let content;
   try {
-    content = fs.readFileSync(transcriptPath, 'utf8');
+    content = readTranscriptTail(transcriptPath)?.text;
+    if (!content) return null;
   } catch {
     return null;
   }
@@ -60,7 +61,7 @@ function extractConversationText(transcriptPath) {
                   .map(c => c.text)
                   .join(' ')
               : '';
-        const cleaned = text.replace(/\n+/g, ' ').trim();
+        const cleaned = redactSessionSecrets(text).replace(/\n+/g, ' ').trim();
         if (cleaned) {
           turns.push({ role: 'User', text: cleaned.slice(0, 400) });
         }
@@ -74,7 +75,7 @@ function extractConversationText(transcriptPath) {
           .replace(/\n+/g, ' ')
           .trim();
         if (textParts) {
-          turns.push({ role: 'Claude', text: textParts.slice(0, 600) });
+          turns.push({ role: 'Claude', text: redactSessionSecrets(textParts).slice(0, 600) });
         }
       }
     } catch {
@@ -160,6 +161,7 @@ function generateSessionSummary(transcriptPath) {
         ECC_LLM_SUMMARY_SUBPROCESS: '1'
       },
       timeout: LLM_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
       shell: process.platform === 'win32'
     });
 

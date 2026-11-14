@@ -133,6 +133,68 @@ async function runTests() {
   let passed = 0;
   let failed = 0;
 
+  if (await test('refuses unauthenticated non-loopback bindings', async () => {
+    for (const host of ['0.0.0.0', '::', '192.168.1.10', 'example.com']) {
+      assert.throws(() => createControlPaneServer({ host }), /loopback/i);
+      assert.throws(() => parseArgs(['node', 'control-pane', '--host', host]), /loopback/i);
+    }
+  })) passed++; else failed++;
+
+  if (await test('requires exact browser origins and limits request bodies', async () => {
+    const app = createControlPaneServer({ port: 0, repoRoot: REPO_ROOT });
+    await app.listen();
+    try {
+      for (const origin of ['http://localhost:1', app.url.replace(/:\d+$/, ':1'), 'https:' + app.url.slice(5), app.url + '/path']) {
+        const response = await fetch(`${app.url}/api/actions/unknown`, {
+          method: 'POST', headers: { origin }, body: '{}'
+        });
+        assert.strictEqual(response.status, 403, origin);
+      }
+      const oversized = await fetch(`${app.url}/api/actions/unknown`, {
+        method: 'POST', body: JSON.stringify({ query: 'x'.repeat(70000) })
+      });
+      assert.strictEqual(oversized.status, 413);
+      const normal = await fetch(`${app.url}/api/health`, { headers: { origin: app.url } });
+      assert.strictEqual(normal.status, 200);
+    } finally { await app.close(); }
+  })) passed++; else failed++;
+
+  if (await test('escalates termination when an action ignores SIGTERM', async () => {
+    const start = Date.now();
+    const result = await runAction({
+      id: 'ignore-term', command: process.execPath,
+      args: ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 20)"], cwd: REPO_ROOT
+    }, { timeoutMs: 300, killGraceMs: 100 });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.timedOut, true);
+    assert.ok(Date.now() - start < 3000);
+    if (process.platform !== 'win32') assert.strictEqual(result.signal, 'SIGKILL');
+  })) passed++; else failed++;
+
+  if (await test('terminates Unix descendants that retain action output pipes', async () => {
+    if (process.platform !== 'linux') return;
+    for (const descendantStdio of ['inherit', 'ignore']) {
+      const result = await runAction({
+        id: 'descendant', command: process.execPath,
+        args: ['-e', `
+          const child = require('child_process').spawn(process.execPath, ['-e',
+            "process.on('SIGTERM', () => {}); setInterval(() => {}, 20)"
+          ], { stdio: ['ignore', ${JSON.stringify(descendantStdio)}, ${JSON.stringify(descendantStdio)}] });
+          process.stdout.write(String(child.pid));
+          setInterval(() => {}, 20);
+        `], cwd: REPO_ROOT
+      }, { timeoutMs: 400, killGraceMs: 100 });
+      assert.strictEqual(result.timedOut, true);
+      const pid = Number(result.stdout);
+      assert.ok(pid > 0);
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        assert.strictEqual(stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3), 'Z');
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      finally { try { process.kill(pid, 'SIGKILL'); } catch (_) { /* Already gone. */ } }
+    }
+  })) passed++; else failed++;
+
   if (
     await test('parses CLI arguments for local-only serving', async () => {
       const parsed = parseArgs([

@@ -2,7 +2,19 @@
 
 This is a **production-ready AI coding plugin** providing 68 specialized agents, 293 skills, 94 commands, and automated hook workflows for software development.
 
-**Version:** 2.2.3
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:25e0ed8f98be80da7952cc2044116fe1aa35f88170d46148c08b89b2b75295c1 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4d42634d94b8c8d27f1853a83c024a3ee111011ace74567b2b88de7dc40a1a77 -->
+
+**Version:** 2.2.4
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Core Principles
 

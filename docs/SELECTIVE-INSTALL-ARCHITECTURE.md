@@ -674,6 +674,10 @@ Suggested path conventions:
 
 Suggested payload:
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:1061e27577c2bc38b883d2aa4e55a61189dff49f13cf1fdf9f610368ab04e8d7 -->
+
 ```json
 {
   "schemaVersion": "ecc.install.v1",
@@ -703,7 +707,7 @@ Suggested payload:
     "skippedModules": []
   },
   "source": {
-    "repoVersion": "2.2.3",
+    "repoVersion": "2.2.4",
     "repoCommit": "git-sha",
     "manifestVersion": 1
   },
@@ -717,6 +721,8 @@ Suggested payload:
   ]
 }
 ```
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 State requirements:
 

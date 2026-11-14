@@ -1305,6 +1305,68 @@ impl StateStore {
             .map_err(Into::into)
     }
 
+    pub fn replace_process_state_if_current(
+        &self,
+        session_id: &str,
+        pid: Option<u32>,
+        expected: &SessionState,
+        next: &SessionState,
+    ) -> Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE sessions SET state = ?1, updated_at = ?2, last_heartbeat_at = ?2
+             WHERE id = ?3 AND pid IS ?4 AND state = ?5",
+            rusqlite::params![
+                next.to_string(),
+                chrono::Utc::now().to_rfc3339(),
+                session_id,
+                pid.map(i64::from),
+                expected.to_string()
+            ],
+        )?;
+        self.refresh_session_board_meta()?;
+        Ok(updated == 1)
+    }
+
+    pub fn start_process(&self, session_id: &str, pid: u32) -> Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE sessions SET state = 'running', pid = ?1,
+                updated_at = ?2, last_heartbeat_at = ?2
+             WHERE id = ?3 AND state = 'pending' AND pid IS NULL",
+            rusqlite::params![i64::from(pid), chrono::Utc::now().to_rfc3339(), session_id],
+        )?;
+        anyhow::ensure!(
+            updated == 1,
+            "Session is no longer available to start: {session_id}"
+        );
+        self.refresh_session_board_meta()?;
+        Ok(())
+    }
+
+    /// Only the process still registered for this run may publish its result.
+    /// A stop request is terminal even when process exit races with the request.
+    pub fn finish_process(
+        &self,
+        session_id: &str,
+        pid: Option<u32>,
+        state: &SessionState,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET
+                state = CASE WHEN state = 'stopped' THEN state ELSE ?1 END,
+                pid = NULL, updated_at = ?2, last_heartbeat_at = ?2
+             WHERE id = ?3 AND pid IS ?4
+               AND state IN ('pending', 'running', 'idle', 'stale', 'stopped')",
+            rusqlite::params![
+                state.to_string(),
+                chrono::Utc::now().to_rfc3339(),
+                session_id,
+                pid.map(i64::from)
+            ],
+        )?;
+        self.refresh_session_board_meta()?;
+        Ok(())
+    }
+
     pub fn update_state_and_pid(
         &self,
         session_id: &str,
@@ -3964,6 +4026,7 @@ impl StateStore {
         line: &str,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
+        let line = super::output::bounded_output_line(line.to_owned());
 
         self.conn.execute(
             "INSERT INTO session_output (session_id, stream, line, timestamp)
@@ -4050,11 +4113,7 @@ impl StateStore {
     }
 
     /// Returns at most `limit` output rows newer than `cursor` in insertion order.
-    pub(crate) fn get_output_since(
-        &self,
-        cursor: i64,
-        limit: usize,
-    ) -> Result<SessionOutputBatch> {
+    pub(crate) fn get_output_since(&self, cursor: i64, limit: usize) -> Result<SessionOutputBatch> {
         let cursor = cursor.max(0);
         let limit = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
         let mut stmt = self.conn.prepare(
@@ -5762,6 +5821,29 @@ mod tests {
             last_heartbeat_at: now,
             metrics: SessionMetrics::default(),
         }
+    }
+
+    #[test]
+    fn finish_process_preserves_stop_and_newer_run() -> Result<()> {
+        let tempdir = TestDir::new("store-finish-process")?;
+        let db = StateStore::open(&tempdir.path().join("state.db"))?;
+        let mut session = build_session("worker", SessionState::Stopped);
+        session.pid = Some(123);
+        db.insert_session(&session)?;
+        assert!(db.start_process("worker", 789).is_err());
+        db.finish_process("worker", Some(123), &SessionState::Failed)?;
+        let stopped = db.get_session("worker")?.unwrap();
+        assert_eq!(stopped.state, SessionState::Stopped);
+        assert_eq!(stopped.pid, None);
+        db.update_state_and_pid("worker", &SessionState::Running, Some(456))?;
+        db.finish_process("worker", Some(123), &SessionState::Completed)?;
+        let running = db.get_session("worker")?.unwrap();
+        assert_eq!(running.state, SessionState::Running);
+        assert_eq!(running.pid, Some(456));
+        db.append_output_line("worker", OutputStream::Stdout, &"é".repeat(20000))?;
+        let lines = db.get_output_lines("worker", 1)?;
+        assert!(lines[0].text.len() <= super::super::output::OUTPUT_LINE_BYTE_LIMIT);
+        Ok(())
     }
 
     #[test]

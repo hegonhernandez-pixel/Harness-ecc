@@ -72,6 +72,19 @@ def get_provider(provider_type: ProviderType | str | None = None, **kwargs: str)
     if not provider_cls:
         raise ValueError(f"No provider registered for type: {provider_type}")
 
+    # A saved model belongs to its saved provider; never leak it into a
+    # different provider chosen explicitly or through the environment.
+    saved = _read_saved_llm_config()
+    env_provider = os.environ.get("LLM_PROVIDER")
+    selected_provider = _strip_env_value(env_provider).lower() if env_provider else None
+    env_model = os.environ.get("LLM_MODEL")
+    model = None
+    if env_model and (selected_provider is None or selected_provider == provider_type.value):
+        model = _strip_env_value(env_model)
+    elif saved.get("LLM_PROVIDER", "claude").lower() == provider_type.value:
+        model = saved.get("LLM_MODEL")
+    if model and "default_model" not in kwargs:
+        kwargs = {**kwargs, "default_model": model}
     return provider_cls(**kwargs)
 
 

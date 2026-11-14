@@ -19,6 +19,7 @@ from llm.core.types import (
     ProviderType,
     ToolCall,
 )
+from llm.providers.messages import ollama_messages
 
 
 class OllamaProvider(LLMProvider):
@@ -68,9 +69,16 @@ class OllamaProvider(LLMProvider):
 
             payload: dict[str, Any] = {
                 "model": model,
-                "messages": [msg.to_dict() for msg in input.messages],
+                "messages": ollama_messages(input.messages),
                 "stream": False,
             }
+            if input.tools:
+                payload["tools"] = [
+                    {"type": "function", "function": {
+                        "name": tool.name, "description": tool.description,
+                        "parameters": tool.parameters,
+                    }} for tool in input.tools
+                ]
             options: dict[str, Any] = {}
             if input.temperature != 1.0:
                 options["temperature"] = input.temperature
@@ -91,11 +99,11 @@ class OllamaProvider(LLMProvider):
             if result.get("message", {}).get("tool_calls"):
                 tool_calls = [
                     ToolCall(
-                        id=tc.get("id", ""),
+                        id=tc.get("id") or f"ollama-tool-{index}",
                         name=tc.get("function", {}).get("name", ""),
                         arguments=tc.get("function", {}).get("arguments", {}),
                     )
-                    for tc in result["message"]["tool_calls"]
+                    for index, tc in enumerate(result["message"]["tool_calls"])
                 ]
 
             return LLMOutput(

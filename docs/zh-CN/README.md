@@ -81,7 +81,19 @@
 
 ## 最新动态
 
-### v2.2.3 — pi/core 配置与发布可靠性（2026年10月）
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:7d9e05b10d53971bdfef28b74723aa4e99d129888c33f948467e5eaeddc795e6 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4cd6fc9f99bccf929a12e8ba9b9ba3ba924b87de2cb26492edebd49a3f4df54a -->
+
+### v2.2.4 — pi/core 配置与发布可靠性（2026年10月）
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 `pi/core` 配置现在仅以 ECC 称呼本项目，发布工作流在校验已发布的包之前会等待 npm 最多五分钟。
 
@@ -1174,113 +1186,9 @@ opencode
 
 ### 功能对等
 
-| 功能特性 | Claude Code   | OpenCode | 状态 |
-|---------|---------------|----------|--------|
-| 智能体 | PASS: 68 个    | PASS: 12 个 | **Claude Code 领先** |
-| 命令 | PASS: 94 个    | PASS: 35 个 | **Claude Code 领先** |
-| 技能 | PASS: 293 项   | PASS: 37 项 | **Claude Code 领先** |
-| 钩子 | PASS: 8 种事件类型 | PASS: 11 种事件 | **OpenCode 更多！** |
-| 规则 | PASS: 29 条    | PASS: 13 条指令 | **Claude Code 领先** |
-| MCP 服务器 | PASS: 14 个    | PASS: 完整 | **完全对等** |
-| 自定义工具 | PASS: 通过钩子    | PASS: 6 个原生工具 | **OpenCode 更优** |
+<!-- coderabbit-ai-generated:v1 -->
 
-### 通过插件实现的钩子支持
-
-OpenCode 的插件系统比 Claude Code 更复杂，有 20 多种事件类型：
-
-| Claude Code 钩子 | OpenCode 插件事件 |
-|-----------------|----------------------|
-| PreToolUse | `tool.execute.before` |
-| PostToolUse | `tool.execute.after` |
-| Stop | `session.idle` |
-| SessionStart | `session.created` |
-| SessionEnd | `session.deleted` |
-
-**额外的 OpenCode 事件**：`file.edited`、`file.watcher.updated`、`message.updated`、`lsp.client.diagnostics`、`tui.toast.show` 等等。
-
-### 维护中的斜杠命令
-
-| 命令 | 描述 |
-|---------|-------------|
-| `/plan` | 创建实施计划 |
-| `/code-review` | 审查代码变更 |
-| `/build-fix` | 修复构建错误 |
-| `/refactor-clean` | 移除死代码 |
-| `/learn` | 从会话中提取模式 |
-| `/checkpoint` | 保存验证状态 |
-| `/quality-gate` | 运行维护中的验证门禁 |
-| `/update-docs` | 更新文档 |
-| `/update-codemaps` | 更新代码地图 |
-| `/test-coverage` | 分析覆盖率 |
-| `/go-review` | Go 代码审查 |
-| `/go-test` | Go TDD 工作流 |
-| `/go-build` | 修复 Go 构建错误 |
-| `/python-review` | Python 代码审查（PEP 8、类型提示、安全性） |
-| `/multi-plan` | 多模型协作规划 |
-| `/multi-execute` | 多模型协作执行 |
-| `/multi-backend` | 后端聚焦的多模型工作流 |
-| `/multi-frontend` | 前端聚焦的多模型工作流 |
-| `/multi-workflow` | 完整的多模型开发工作流 |
-| `/pm2` | 自动生成 PM2 服务命令 |
-| `/sessions` | 管理会话历史 |
-| `/skill-create` | 从 git 生成技能 |
-| `/instinct-status` | 查看已学习的本能 |
-| `/instinct-import` | 导入本能 |
-| `/instinct-export` | 导出本能 |
-| `/evolve` | 将本能聚类为技能 |
-| `/promote` | 将项目本能提升到全局范围 |
-| `/projects` | 列出已知项目和本能统计信息 |
-| `/learn-eval` | 保存前提取和评估模式 |
-| `/setup-pm` | 配置包管理器 |
-| `/harness-audit` | 审计平台可靠性、评估准备情况和风险状况 |
-| `/loop-start` | 启动受控的智能体循环执行模式 |
-| `/loop-status` | 检查活动循环状态和检查点 |
-| `/quality-gate` | 对路径或整个仓库运行质量门检查 |
-| `/model-route` | 根据复杂度和预算将任务路由到模型 |
-
-### 插件安装
-
-**选项 1：直接使用**
-
-```bash
-cd ECC
-opencode
-```
-
-**选项 2：作为 npm 包安装**
-
-```bash
-npm install ecc-universal
-```
-
-然后添加到您的 `opencode.json`：
-
-```json
-{
-  "plugin": ["ecc-universal"]
-}
-```
-
-该 npm 插件条目启用了 ECC 发布的 OpenCode 插件模块（钩子/事件和插件工具）。
-它**不会**自动将 ECC 的完整命令/代理/指令目录添加到您的项目配置中。
-
-要获得完整的 ECC OpenCode 设置，您可以：
-
-* 在此仓库内运行 OpenCode，或者
-* 将捆绑的 `.opencode/` 配置资源复制到您的项目中，并在 `opencode.json` 中连接 `instructions`、`agent` 和 `command` 条目
-
-### 文档
-
-* **迁移指南**：`.opencode/MIGRATION.md`
-* **OpenCode 插件 README**：`.opencode/README.md`
-* **整合的规则**：`.opencode/instructions/INSTRUCTIONS.md`
-* **LLM 文档**：`llms.txt`（完整的 OpenCode 文档，供 LLM 使用）
-
-***
-
-## 跨工具功能对等
-
-ECC 是**第一个最大化利用每个主要 AI 编码工具的插件**。以下是每个平台的比较：
+<!-- coderabbit-ai-generated-section:v1:46a9a4169968c921b937990b1feb39530530c20aafb6cd0919da7085dba15b98 -->
 
 | 功能特性 | Claude Code           | Cursor IDE | Codex CLI | OpenCode |
 |---------|-----------------------|------------|-----------|----------|
@@ -1296,7 +1204,9 @@ ECC 是**第一个最大化利用每个主要 AI 编码工具的插件**。以�
 | **上下文文件** | CLAUDE.md + AGENTS.md | AGENTS.md | AGENTS.md | AGENTS.md |
 | **秘密检测** | 基于钩子                  | beforeSubmitPrompt 钩子 | 基于沙箱 | 基于钩子 |
 | **自动格式化** | PostToolUse 钩子        | afterFileEdit 钩子 | N/A | file.edited 钩子 |
-| **版本** | 插件 | 插件 | 参考配置 | 2.2.3 |
+| **版本** | 插件 | 插件 | 参考配置 | 2.2.4 |
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 **关键架构决策：**
 

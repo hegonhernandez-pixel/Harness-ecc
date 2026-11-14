@@ -79,7 +79,19 @@ Este repositório contém apenas o código. Os guias explicam tudo.
 
 ## O Que Há de Novo
 
-### v2.2.3 — Perfil pi/core e Confiabilidade de Releases (Out 2026)
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:230317067de25b509c434fa154323198cb68534e0c379da9d4b0db306c737f7c -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:b179f4993780991e9feaa0b1cd8b92ce4486ae17849f4e72b54930e39699bf88 -->
+
+### v2.2.4 — Perfil pi/core e Confiabilidade de Releases (Out 2026)
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 O perfil `pi/core` agora se refere ao projeto apenas como ECC, e o workflow de release aguarda até cinco minutos pelo npm antes de verificar o pacote publicado.
 

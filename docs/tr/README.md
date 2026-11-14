@@ -79,7 +79,19 @@ Bu repository yalnızca ham kodu içerir. Rehberler her şeyi açıklıyor.
 
 ## Yenilikler
 
-### v2.2.3 — pi/core Profili ve Sürüm Güvenilirliği (Eki 2026)
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:971cf5e8a8547d02f89ae59463b95f651cc14fe79301dc7400aae1ab25700989 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:15ca1f60a17c3f19df95ea4fdf85d5ada7ef63fa6155fdb1cdb86117e56f917d -->
+
+### v2.2.4 — pi/core Profili ve Sürüm Güvenilirliği (Eki 2026)
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 `pi/core` profili projeyi yalnızca ECC olarak adlandırır; sürüm iş akışı yayımlanan paketi doğrulamadan önce npm için beş dakikaya kadar bekler.
 

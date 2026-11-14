@@ -80,7 +80,19 @@
 
 ## 最新动态
 
-### v2.2.3 — pi/core 配置与发布可靠性（2026年10月）
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:7d9e05b10d53971bdfef28b74723aa4e99d129888c33f948467e5eaeddc795e6 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4cd6fc9f99bccf929a12e8ba9b9ba3ba924b87de2cb26492edebd49a3f4df54a -->
+
+### v2.2.4 — pi/core 配置与发布可靠性（2026年10月）
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 `pi/core` 配置现在仅以 ECC 称呼本项目，发布工作流在校验已发布的包之前会等待 npm 最多五分钟。
 

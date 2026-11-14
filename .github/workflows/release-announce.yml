@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   announce:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.repository == 'affaan-m/ECC' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read

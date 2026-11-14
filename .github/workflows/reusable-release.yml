@@ -24,6 +24,7 @@ permissions:
 
 jobs:
   verify:
+    if: github.repository == 'affaan-m/ECC'
     name: Verify Release
     runs-on: ubuntu-latest
     outputs:

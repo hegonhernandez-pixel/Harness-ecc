@@ -5,6 +5,19 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 pub const OUTPUT_BUFFER_LIMIT: usize = 1000;
+/// Bound each retained row as well as the number of rows (about 16 MiB/session).
+pub const OUTPUT_LINE_BYTE_LIMIT: usize = 16 * 1024;
+
+pub fn bounded_output_line(mut text: String) -> String {
+    if text.len() > OUTPUT_LINE_BYTE_LIMIT {
+        let mut end = OUTPUT_LINE_BYTE_LIMIT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
+}
 /// Maximum number of cross-process output rows applied during one dashboard refresh.
 pub const OUTPUT_DELTA_BATCH_LIMIT: usize = 4096;
 
@@ -45,7 +58,7 @@ impl OutputLine {
     ) -> Self {
         Self {
             stream,
-            text: text.into(),
+            text: bounded_output_line(text.into()),
             timestamp: timestamp.into(),
         }
     }

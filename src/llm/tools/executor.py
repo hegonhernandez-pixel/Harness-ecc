@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Callable
@@ -101,7 +102,10 @@ class ToolExecutor:
             )
 
         try:
-            result = func(**tool_call.arguments)
+            if inspect.iscoroutinefunction(func) or inspect.iscoroutinefunction(getattr(func, "__call__", None)):
+                result = func(**tool_call.arguments)
+            else:
+                result = await asyncio.to_thread(func, **tool_call.arguments)
             if inspect.isawaitable(result):
                 result = await result
             content = result if isinstance(result, str) else str(result)
@@ -145,7 +149,7 @@ class ReActAgent:
             )
 
             try:
-                output: LLMOutput = self.provider.generate(input_copy)
+                output: LLMOutput = await asyncio.to_thread(self.provider.generate, input_copy)
             except LLMError as e:
                 logger.warning("Provider failed during agent run: %s", e.code or type(e).__name__)
                 return LLMOutput(
@@ -166,12 +170,13 @@ class ReActAgent:
 
             results = await self.executor.execute_all_async(output.tool_calls or [])
 
-            for result in results:
+            for call, result in zip(output.tool_calls or [], results, strict=True):
                 messages.append(
                     Message(
                         role=Role.TOOL,
                         content=result.content,
                         tool_call_id=result.tool_call_id,
+                        name=call.name,
                     )
                 )
 

@@ -2,7 +2,19 @@
 
 Bu, yazılım geliştirme için 68 özel agent, 293 skill, 94 command ve otomatik hook iş akışları sağlayan **üretime hazır bir AI kodlama eklentisidir**.
 
-**Sürüm:** 2.2.3
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:f4ecbfc7cecc29661d74d0e4f07723e0a404794dfe9ab8110be00b9c07b8ef75 -->
+
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:e378e489cf6920715c0ceb0d50df751e871c3bc3b71cc9382b73460f91c5ed87 -->
+
+**Sürüm:** 2.2.4
+
+<!-- /coderabbit-ai-generated:v1 -->
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Temel İlkeler
 
