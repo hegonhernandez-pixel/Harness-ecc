@@ -114,6 +114,22 @@ function waitForExit(child) {
   });
 }
 
+async function waitForProcessTermination(pid, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+      if (state === 'Z') return;
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for descendant ${pid} to terminate`);
+}
+
 async function fetchLocal(url, options) {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -187,10 +203,7 @@ async function runTests() {
       assert.strictEqual(result.timedOut, true);
       const pid = Number(result.stdout);
       assert.ok(pid > 0);
-      try {
-        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-        assert.strictEqual(stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3), 'Z');
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try { await waitForProcessTermination(pid); }
       finally { try { process.kill(pid, 'SIGKILL'); } catch (_) { /* Already gone. */ } }
     }
   })) passed++; else failed++;
